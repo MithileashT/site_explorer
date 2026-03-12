@@ -11,6 +11,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.logging import get_logger
+
+# Upper bound on the bag time-window passed to filter_window when analysing
+# the full bag during an investigation (effectively "no window").
+_FULL_BAG_SECS = 9_999
+
 from schemas.investigation import (
     IncidentReportRequest, OrchestratorResponse,
 )
@@ -48,7 +53,7 @@ def investigate(req: IncidentReportRequest) -> OrchestratorResponse:
             # Use the full bag as the window for investigation
             if all_logs:
                 midpoint = (all_logs[0]["timestamp"] + all_logs[-1]["timestamp"]) / 2
-                filtered = extractor.filter_window(all_logs, midpoint, window=9999)
+                filtered = extractor.filter_window(all_logs, midpoint, window=_FULL_BAG_SECS)
                 priority = extractor.priority_logs(filtered)
                 if _llm_service:
                     log_analysis = _llm_service.generate_log_incident_summary(

@@ -32,8 +32,8 @@ class _Settings:
     repo_url:         str  = os.getenv("REPO_URL",          "")
     site_sync_enabled: bool = os.getenv("SITE_SYNC_ENABLED", "false").lower() == "true"
 
-    # ── External integrations ────────────────────────────────────────────────
-    slack_bot_token: str = os.getenv("SLACK_BOT_TOKEN", "")
+    # ── External integrations ────────────────────────────────────────────────    # REVIEW: these are stub fields reserved for future integrations.
+    # None of these are currently referenced by any service module.    slack_bot_token: str = os.getenv("SLACK_BOT_TOKEN", "")
     grafana_api_key: str = os.getenv("GRAFANA_API_KEY", "")
     github_token:    str = os.getenv("GITHUB_TOKEN",    "")
 

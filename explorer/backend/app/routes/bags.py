@@ -8,10 +8,8 @@ import os
 import pathlib
 import re
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.logging import get_logger
@@ -31,6 +29,7 @@ _site_manager = None
 
 ALLOWED_EXTENSIONS = {".bag", ".db3"}
 MAX_UPLOAD_BYTES    = 400 * 1024 * 1024  # 400 MB
+MAX_LOG_ENTRIES     = 2_000              # max log lines returned to the UI
 
 
 def register_singletons(llm, site_mgr):
@@ -193,7 +192,7 @@ def analyze_bag_logs(req: BagLogAnalysisRequest):
         total_messages    = len(all_logs),
         error_count       = error_count,
         warning_count     = warning_count,
-        log_entries       = [_map_log(l) for l in filtered[:2000]],
+        log_entries       = [_map_log(l) for l in filtered[:MAX_LOG_ENTRIES]],
         engine_hypothesis = engine_hypothesis,
         llm_summary       = llm_summary,
     )

@@ -4,8 +4,7 @@ app/routes/sites.py — Site map + fleet data endpoints.
 from __future__ import annotations
 
 import base64
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query
 
 from core.logging import get_logger
 

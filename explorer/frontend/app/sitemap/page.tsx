@@ -6,22 +6,16 @@ import {
   getSiteMapMeta,
   getSiteMapData,
   getSiteMarkers,
-  getSiteBranchInfo,
-  setSiteBranch,
-  clearSiteBranch,
-  syncSiteRepo,
-  getBranchCleanupPlan,
-  runBranchCleanup,
 } from "@/lib/api";
 import type {
   SiteMapMeta,
   SiteMapData,
   SiteMapSpot,
   SiteMapMarker,
-  BranchInfo,
-  BranchCleanupPlan,
-  BranchCleanupResult,
 } from "@/lib/types";
+import { useOutsideClick } from "@/hooks/useOutsideClick";
+import { useBranchManager } from "@/hooks/useBranchManager";
+import { useCleanupModal } from "@/hooks/useCleanupModal";
 import SiteMapCanvas, { type Layers, type SiteMapCanvasHandle, worldToPixel } from "@/components/sitemap/SiteMapCanvas";
 import {
   Map,
@@ -93,18 +87,19 @@ export default function SiteMapPage() {
   const [hiddenRegionTypes, setHiddenRegionTypes] = useState<Set<string>>(new Set());
   const [selectedSpot,      setSelectedSpot]      = useState<SiteMapSpot | null>(null);
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
-  const searchRef       = useRef<HTMLDivElement>(null);
-  const canvasRef       = useRef<SiteMapCanvasHandle>(null);
 
   // Site selector dropdown
   const [showSiteDropdown, setShowSiteDropdown] = useState(false);
-  const siteDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Branch state
-  const [branchInfo,         setBranchInfo]         = useState<BranchInfo | null>(null);
+  // Branch state — managed by useBranchManager; dropdown visibility stays local
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
-  const [syncing,            setSyncing]            = useState(false);
-  const branchDropdownRef = useRef<HTMLDivElement>(null);
+  const { branchInfo, setBranchInfo, syncing, refreshBranchInfo, handleSetBranch, handleClearBranch, handleSync } = useBranchManager(siteId);
+
+  // useOutsideClick replaces three manual useEffect + useRef patterns
+  const searchRef       = useOutsideClick<HTMLDivElement>(showSearchDropdown, () => setShowSearchDropdown(false));
+  const siteDropdownRef = useOutsideClick<HTMLDivElement>(showSiteDropdown,   () => setShowSiteDropdown(false));
+  const branchDropdownRef = useOutsideClick<HTMLDivElement>(showBranchDropdown, () => setShowBranchDropdown(false));
+  const canvasRef         = useRef<SiteMapCanvasHandle>(null);
 
   // Sidebar width state (resizable)
   const [sidebarWidth, setSidebarWidth] = useState(256);
@@ -127,52 +122,14 @@ export default function SiteMapPage() {
     window.addEventListener("mouseup", onUp);
   }, [sidebarWidth]);
 
-  // Branch cleanup modal state
-  const [showCleanupModal,  setShowCleanupModal]  = useState(false);
-  const [cleanupPlan,       setCleanupPlan]       = useState<BranchCleanupPlan | null>(null);
-  const [cleanupResult,     setCleanupResult]     = useState<BranchCleanupResult | null>(null);
-  const [cleanupLoading,    setCleanupLoading]    = useState(false);
-  const [cleanupPlanLoading,setCleanupPlanLoading]= useState(false);
-  const [cleanupErr,        setCleanupErr]        = useState("");
+  // Cleanup modal state — managed by useCleanupModal hook
+  const {
+    showCleanupModal, setShowCleanupModal,
+    cleanupPlan, cleanupResult, cleanupLoading, cleanupPlanLoading, cleanupErr,
+    openCleanupModal, handleRunCleanup,
+  } = useCleanupModal();
 
-  // ── Close site dropdown on outside click ───────────────────────────────
-  useEffect(() => {
-    function handleOutside(e: MouseEvent) {
-      if (siteDropdownRef.current && !siteDropdownRef.current.contains(e.target as Node)) {
-        setShowSiteDropdown(false);
-      }
-    }
-    if (showSiteDropdown) {
-      document.addEventListener("mousedown", handleOutside);
-      return () => document.removeEventListener("mousedown", handleOutside);
-    }
-  }, [showSiteDropdown]);
-
-  // ── Close branch dropdown on outside click ────────────────────────────────
-  useEffect(() => {
-    function handleOutside(e: MouseEvent) {
-      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
-        setShowBranchDropdown(false);
-      }
-    }
-    if (showBranchDropdown) {
-      document.addEventListener("mousedown", handleOutside);
-      return () => document.removeEventListener("mousedown", handleOutside);
-    }
-  }, [showBranchDropdown]);
-
-  // ── Close search dropdown on outside click ───────────────────────────────
-  useEffect(() => {
-    function handleOutside(e: MouseEvent) {
-      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
-        setShowSearchDropdown(false);
-      }
-    }
-    if (showSearchDropdown) {
-      document.addEventListener("mousedown", handleOutside);
-      return () => document.removeEventListener("mousedown", handleOutside);
-    }
-  }, [showSearchDropdown]);
+  // Outside-click handling is now done via three useOutsideClick calls above.
 
   // ── Load sites on mount ───────────────────────────────────────────────────
 
@@ -203,34 +160,18 @@ export default function SiteMapPage() {
       setMeta(metaRes);
       setMapData(dataRes);
       setMarkers(markersRes.markers);
-      // Load branch info non-blocking (best-effort)
-      getSiteBranchInfo(id).then(setBranchInfo).catch(() => setBranchInfo(null));
+      // Non-blocking: refresh branch info (covers same-siteId reloads not caught by the hook's effect)
+      refreshBranchInfo(id);
     } catch (e: unknown) {
       setMapErr(e instanceof Error ? e.message : "Failed to load site map");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refreshBranchInfo]);
 
   useEffect(() => {
     if (siteId) loadSite(siteId);
   }, [siteId, loadSite]);
-
-  const openCleanupModal = useCallback(async () => {
-    setCleanupPlan(null);
-    setCleanupResult(null);
-    setCleanupErr("");
-    setShowCleanupModal(true);
-    setCleanupPlanLoading(true);
-    try {
-      const plan = await getBranchCleanupPlan();
-      setCleanupPlan(plan);
-    } catch (e: unknown) {
-      setCleanupErr(e instanceof Error ? e.message : "Failed to load cleanup plan.");
-    } finally {
-      setCleanupPlanLoading(false);
-    }
-  }, []);
 
   // ── Legend type toggle helpers ─────────────────────────────────────────────
 
@@ -548,8 +489,7 @@ export default function SiteMapPage() {
                         key={b}
                         onClick={async () => {
                           setShowBranchDropdown(false);
-                          const updated = await setSiteBranch(siteId, b);
-                          setBranchInfo(updated);
+                          await handleSetBranch(b);
                           loadSite(siteId);
                         }}
                         className={clsx(
@@ -569,8 +509,7 @@ export default function SiteMapPage() {
                       <button
                         onClick={async () => {
                           setShowBranchDropdown(false);
-                          const updated = await clearSiteBranch(siteId);
-                          setBranchInfo(updated);
+                          await handleClearBranch();
                           loadSite(siteId);
                         }}
                         className="w-full text-left px-3 py-1.5 text-xs text-amber-400 hover:bg-white/[0.05] transition-colors flex items-center gap-2"
@@ -587,14 +526,8 @@ export default function SiteMapPage() {
           {/* ── Sync button ───────────────────────────────────────────── */}
           <button
             onClick={async () => {
-              setSyncing(true);
-              try {
-                await syncSiteRepo();
-                const info = await getSiteBranchInfo(siteId);
-                setBranchInfo(info);
-                loadSite(siteId);
-              } catch { /* ignore */ }
-              finally { setSyncing(false); }
+              const ok = await handleSync();
+              if (ok) loadSite(siteId);
             }}
             disabled={syncing || !siteId}
             title="Sync from remote (git fetch)"
@@ -723,22 +656,7 @@ export default function SiteMapPage() {
               {!cleanupResult && cleanupPlan && cleanupPlan.invalid_branches.length > 0 && (
                 <button
                   disabled={cleanupLoading}
-                  onClick={async () => {
-                    setCleanupLoading(true);
-                    setCleanupErr("");
-                    try {
-                      const result = await runBranchCleanup();
-                      setCleanupResult(result);
-                      // Refresh branch info for current site
-                      if (siteId) {
-                        getSiteBranchInfo(siteId).then(setBranchInfo).catch(() => {});
-                      }
-                    } catch (e: unknown) {
-                      setCleanupErr(e instanceof Error ? e.message : "Cleanup failed");
-                    } finally {
-                      setCleanupLoading(false);
-                    }
-                  }}
+                  onClick={() => handleRunCleanup(() => refreshBranchInfo(siteId))}
                   className="px-4 py-1.5 text-xs font-medium rounded-md bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white transition-colors flex items-center gap-1.5"
                 >
                   {cleanupLoading ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}

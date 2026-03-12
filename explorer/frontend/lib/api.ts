@@ -54,11 +54,13 @@ export async function listSites(): Promise<SiteInfo[]> {
   return data;
 }
 
+// REVIEW: possibly unused — no callers found in app/ or components/
 export async function getSiteConfig(siteId: string): Promise<MapConfig> {
   const { data } = await http.get<MapConfig>(`/sites/${siteId}/config`);
   return data;
 }
 
+// REVIEW: possibly unused — no callers found in app/ or components/
 export async function getSiteMapB64(siteId: string, darkMode = true): Promise<string | null> {
   try {
     const { data } = await http.get<{ b64: string; width: number; height: number }>(
@@ -70,11 +72,7 @@ export async function getSiteMapB64(siteId: string, darkMode = true): Promise<st
   }
 }
 
-/** @deprecated Use getSiteMapB64 instead */
-export function getSiteMapUrl(siteId: string, darkMode = true): string {
-  return `${BASE}/api/v1/sites/${siteId}/map?dark_mode=${darkMode}`;
-}
-
+// REVIEW: possibly unused — no callers found in app/ or components/
 export async function getSiteData(siteId: string): Promise<SiteData> {
   const { data } = await http.get<SiteData>(`/sites/${siteId}/data`);
   return data;
