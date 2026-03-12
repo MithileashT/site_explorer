@@ -9,6 +9,7 @@ import {
   Bot,
   Activity,
   Warehouse,
+  MessagesSquare,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -17,6 +18,7 @@ const NAV = [
   { href: "/sitemap",    label: "Site Map",       icon: Warehouse       },
   { href: "/bags",       label: "Bag Analyzer",  icon: PackageSearch   },
   { href: "/investigate",label: "Investigate",   icon: SearchCode      },
+  { href: "/slack-investigation", label: "Slack Investigation", icon: MessagesSquare },
   { href: "/assistant",  label: "AI Assistant",  icon: Bot             },
 ];
 

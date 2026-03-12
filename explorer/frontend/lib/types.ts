@@ -80,6 +80,51 @@ export interface OrchestratorResponse {
   raw_analysis: string;
 }
 
+export type IncidentImpact =
+  | "mission_blocked"
+  | "degraded"
+  | "intermittent"
+  | "unknown";
+
+export interface InvestigationFormInput {
+  incident_summary: string;
+  observed_impact: IncidentImpact;
+  detected_at?: string;
+  grafana_link?: string;
+  config_changed: boolean;
+}
+
+export interface SlackThreadMessage {
+  ts: string;
+  datetime: string;
+  user: string;
+  text: string;
+}
+
+export interface SlackThreadInvestigationRequest {
+  slack_thread_url: string;
+  description: string;
+  site_id?: string;
+  hostname?: string;
+  include_bots?: boolean;
+  max_messages?: number;
+}
+
+export interface SlackThreadInvestigationResponse {
+  status: string;
+  workspace?: string;
+  channel_id: string;
+  thread_ts: string;
+  message_count: number;
+  participants: string[];
+  thread_summary: string;
+  key_findings: string[];
+  recommended_actions: string[];
+  risk_level: "low" | "medium" | "high";
+  timeline: SlackThreadMessage[];
+  raw_analysis: string;
+}
+
 // ──────────────────────────────────────────────
 // Site / Fleet
 // ──────────────────────────────────────────────

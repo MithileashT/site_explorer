@@ -16,6 +16,9 @@ import type {
   BranchInfo,
   BranchCleanupPlan,
   BranchCleanupResult,
+  IncidentImpact,
+  SlackThreadInvestigationRequest,
+  SlackThreadInvestigationResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -130,7 +133,7 @@ export async function runMapDiff(
 // ── Investigation ─────────────────────────────────────────────────────────────
 
 export async function investigate(payload: {
-  title: string;
+  title?: string;
   description: string;
   bag_path?: string;
   site_id?: string;
@@ -138,6 +141,8 @@ export async function investigate(payload: {
   slack_url?: string;
   sw_version?: string;
   config_changed?: boolean;
+  observed_impact?: IncidentImpact;
+  detected_at?: string;
 }): Promise<OrchestratorResponse> {
   const { data } = await http.post<OrchestratorResponse>("/investigate", payload);
   return data;
@@ -149,7 +154,7 @@ export async function investigate(payload: {
  */
 export function streamInvestigation(
   params: {
-    title: string;
+    title?: string;
     description: string;
     bag_path?: string;
     site_id?: string;
@@ -158,7 +163,7 @@ export function streamInvestigation(
   onError?: (err: Event) => void
 ): () => void {
   const qs = new URLSearchParams({
-    title: params.title,
+    ...(params.title ? { title: params.title } : {}),
     description: params.description,
     ...(params.bag_path ? { bag_path: params.bag_path } : {}),
     ...(params.site_id ? { site_id: params.site_id } : {}),
@@ -230,5 +235,14 @@ export async function getBranchCleanupPlan(): Promise<BranchCleanupPlan> {
 
 export async function runBranchCleanup(): Promise<BranchCleanupResult> {
   const { data } = await http.post<BranchCleanupResult>("/sitemap/cleanup");
+  return data;
+}
+
+// ── Slack Investigation ─────────────────────────────────────────────────────
+
+export async function investigateSlackThread(
+  payload: SlackThreadInvestigationRequest
+): Promise<SlackThreadInvestigationResponse> {
+  const { data } = await http.post<SlackThreadInvestigationResponse>("/slack/investigate", payload);
   return data;
 }

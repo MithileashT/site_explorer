@@ -38,13 +38,14 @@ if settings.site_sync_enabled:
     GitSyncEngine().sync()
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.routes import health, sites, bags, investigation
+from app.routes import health, sites, bags, investigation, slack_investigation
 from app.routes import sitemap as sitemap_route
 
 health.register_singletons(llm_service, matcher, site_manager)
 sites.register_singletons(site_manager)
 bags.register_singletons(llm_service, site_manager)
 investigation.register_singletons(inv_engine, llm_service)
+slack_investigation.register_singletons(llm_service)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -68,6 +69,7 @@ app.include_router(health.router)
 app.include_router(sites.router)
 app.include_router(bags.router)
 app.include_router(investigation.router)
+app.include_router(slack_investigation.router)
 app.include_router(sitemap_route.router)
 
 

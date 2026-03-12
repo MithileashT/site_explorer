@@ -167,7 +167,7 @@ export default function SiteMapPage() {
     } finally {
       setLoading(false);
     }
-  }, [refreshBranchInfo]);
+  }, [refreshBranchInfo, setBranchInfo]);
 
   useEffect(() => {
     if (siteId) loadSite(siteId);

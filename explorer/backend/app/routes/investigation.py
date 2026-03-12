@@ -27,6 +27,20 @@ _engine      = None
 _llm_service = None
 
 
+def _resolve_incident_title(title: str | None, description: str) -> str:
+    """Build a stable fallback title when UI submits only narrative details."""
+    if title and title.strip():
+        return title.strip()
+
+    cleaned = " ".join((description or "").split()).strip()
+    if not cleaned:
+        return "Untitled incident"
+
+    first_sentence = cleaned.split(".", 1)[0].strip()
+    candidate = first_sentence or cleaned
+    return candidate[:80].rstrip()
+
+
 def register_singletons(engine, llm):
     global _engine, _llm_service
     _engine      = engine
@@ -37,6 +51,8 @@ def register_singletons(engine, llm):
 def investigate(req: IncidentReportRequest) -> OrchestratorResponse:
     if not _engine:
         raise HTTPException(503, "Investigation engine not available.")
+
+    req = req.model_copy(update={"title": _resolve_incident_title(req.title, req.description)})
 
     import os
     ros_signals  = None
@@ -89,8 +105,8 @@ def investigate(req: IncidentReportRequest) -> OrchestratorResponse:
 
 @router.get("/api/v1/investigate/stream", tags=["investigation"])
 async def investigate_stream(
-    title:       str,
     description: str,
+    title:       str = "",
     bag_path:    str = "",
     site_id:     str = "",
 ):
@@ -114,11 +130,12 @@ async def investigate_stream(
         # Run the actual investigation
         try:
             req    = IncidentReportRequest(
-                title       = title,
+                title       = title or None,
                 description = description,
                 bag_path    = bag_path or None,
                 site_id     = site_id or None,
             )
+            req = req.model_copy(update={"title": _resolve_incident_title(req.title, req.description)})
             result = await asyncio.to_thread(
                 _engine.investigate, req
             ) if _engine else None

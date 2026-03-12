@@ -49,8 +49,10 @@ class InvestigationEngine:
         ros_signals   — output from ROSAnomalyDetector.detect_all() (if bag provided)
         log_analysis  — output from LLMService.generate_log_incident_summary() (if bag provided)
         """
+        incident_title = (request.title or "").strip() or "Untitled incident"
+
         # ── 1. FAISS similarity search ────────────────────────────────────────
-        query_text   = f"{request.title}\n{request.description}"
+        query_text   = f"{incident_title}\n{request.description}"
         similar_raw  = self.matcher.search(query_text, k=5)
         similar_cases = [
             SimilarCase(
@@ -118,7 +120,7 @@ class InvestigationEngine:
             status                      = "completed",
             confidence_score            = confidence,
             human_intervention_required = confidence < self.HUMAN_THRESHOLD,
-            issue_summary               = f"{request.title}: {request.description[:300]}",
+            issue_summary               = f"{incident_title}: {request.description[:300]}",
             similar_cases               = similar_cases,
             log_anomaly_summary         = log_anomaly_summary,
             ranked_causes               = ranked_causes,
@@ -143,7 +145,7 @@ class InvestigationEngine:
     ) -> str:
         lines = [
             f"INCIDENT REPORT",
-            f"  Title:       {request.title}",
+            f"  Title:       {(request.title or '').strip() or 'Untitled incident'}",
             f"  Description: {request.description}",
             f"  Site:        {request.site_id or 'N/A'}",
             f"  SW Version:  {request.sw_version or 'N/A'}",
