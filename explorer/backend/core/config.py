@@ -3,10 +3,37 @@ core/config.py — Unified application settings loaded from environment variable
 Covers both aiassist (LLM, bag analysis) and site_commander (maps, git sync) settings.
 """
 import os
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 _ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(dotenv_path=_ENV_PATH, override=False)
+
+_SLACK_TOKEN_ENV_KEYS = ("SLACK_BOT_TOKEN", "SLACK_TOKEN", "SLACK_API_TOKEN")
+
+
+def _clean_env_value(value: str | None) -> str:
+    if value is None:
+        return ""
+    return value.strip().strip('"').strip("'").strip()
+
+
+def resolve_slack_bot_token() -> str:
+    """Return the first configured Slack token from env vars or backend .env."""
+    for key in _SLACK_TOKEN_ENV_KEYS:
+        token = _clean_env_value(os.getenv(key))
+        if token:
+            return token
+
+    try:
+        dotenv_map = dotenv_values(_ENV_PATH)
+    except Exception:
+        return ""
+
+    for key in _SLACK_TOKEN_ENV_KEYS:
+        token = _clean_env_value(dotenv_map.get(key))
+        if token:
+            return token
+    return ""
 
 
 class _Settings:
@@ -14,6 +41,12 @@ class _Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     ollama_model:    str = os.getenv("OLLAMA_MODEL",    "qwen2.5-coder")
     openai_api_key:  str = os.getenv("OPENAI_API_KEY",  "")
+    ollama_host:     str = os.getenv(
+        "OLLAMA_HOST",
+        os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").removesuffix("/v1"),
+    )
+    ollama_vision_model: str = os.getenv("OLLAMA_VISION_MODEL", "llama3.2-vision:11b")
+    ollama_text_model: str = os.getenv("OLLAMA_TEXT_MODEL", "qwen2.5:7b")
 
     # ── Server ───────────────────────────────────────────────────────────────
     host:      str = os.getenv("HOST",      "0.0.0.0")
@@ -34,7 +67,7 @@ class _Settings:
 
     # ── External integrations ────────────────────────────────────────────────
     # These fields are optional and can remain empty when integrations are disabled.
-    slack_bot_token: str = os.getenv("SLACK_BOT_TOKEN", "")
+    slack_bot_token: str = resolve_slack_bot_token()
     grafana_api_key: str = os.getenv("GRAFANA_API_KEY", "")
     github_token:    str = os.getenv("GITHUB_TOKEN",    "")
 

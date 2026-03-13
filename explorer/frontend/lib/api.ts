@@ -19,13 +19,14 @@ import type {
   IncidentImpact,
   SlackThreadInvestigationRequest,
   SlackThreadInvestigationResponse,
+  SlackLLMStatusResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const http = axios.create({
   baseURL: `${BASE}/api/v1`,
-  timeout: 120_000,
+  timeout: 300_000,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -244,5 +245,10 @@ export async function investigateSlackThread(
   payload: SlackThreadInvestigationRequest
 ): Promise<SlackThreadInvestigationResponse> {
   const { data } = await http.post<SlackThreadInvestigationResponse>("/slack/investigate", payload);
+  return data;
+}
+
+export async function getSlackLLMStatus(): Promise<SlackLLMStatusResponse> {
+  const { data } = await http.get<SlackLLMStatusResponse>("/slack/status");
   return data;
 }

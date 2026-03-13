@@ -1,11 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Manrope, Space_Grotesk } from "next/font/google";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  Copy,
+  CopyCheck,
   Link2,
   Loader2,
   MessagesSquare,
@@ -15,10 +18,11 @@ import {
   TerminalSquare,
 } from "lucide-react";
 
-import { investigateSlackThread } from "@/lib/api";
+import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus } from "@/lib/api";
 import type {
   SlackThreadInvestigationRequest,
   SlackThreadInvestigationResponse,
+  SlackLLMStatusResponse,
 } from "@/lib/types";
 
 const headingFont = Space_Grotesk({
@@ -43,6 +47,33 @@ function riskPill(risk: string): string {
   return "border-amber-400/35 bg-amber-500/15 text-amber-200";
 }
 
+function CopyButton({ text, className = "" }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      title={copied ? "Copied!" : "Copy to clipboard"}
+      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs transition-colors ${
+        copied
+          ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
+          : "border-white/10 bg-white/[0.03] text-slate-400 hover:border-sky-400/30 hover:bg-sky-500/10 hover:text-sky-200"
+      } ${className}`}
+    >
+      {copied ? <CopyCheck size={12} /> : <Copy size={12} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 export default function SlackInvestigationPage() {
   const {
     register,
@@ -54,7 +85,6 @@ export default function SlackInvestigationPage() {
       slack_thread_url: "",
       description: "",
       site_id: "",
-      hostname: "",
       include_bots: false,
       max_messages: 200,
     },
@@ -64,6 +94,52 @@ export default function SlackInvestigationPage() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<SlackThreadInvestigationResponse | null>(null);
   const [showRaw, setShowRaw] = useState(false);
+  const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
+  const [sitesLoading, setSitesLoading] = useState(true);
+  const [sitesError, setSitesError] = useState("");
+  const [llmStatus, setLlmStatus] = useState<SlackLLMStatusResponse | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSites() {
+      setSitesLoading(true);
+      setSitesError("");
+      try {
+        const loaded = await listSiteMapSites();
+        if (cancelled) return;
+
+        const sorted = [...loaded].sort((a, b) => a.name.localeCompare(b.name));
+        setSites(sorted);
+      } catch (err) {
+        if (cancelled) return;
+        setSites([]);
+        setSitesError(err instanceof Error ? err.message : "Failed to load site list.");
+      } finally {
+        if (!cancelled) {
+          setSitesLoading(false);
+        }
+      }
+    }
+
+    loadSites();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    getSlackLLMStatus()
+      .then((s) => {
+        setLlmStatus(s);
+        // Pre-select the default text model
+        setSelectedModel(s.text_model);
+      })
+      .catch(() => {
+        // Non-critical — user can still submit without model selector
+      });
+  }, []);
 
   async function onSubmit(data: SlackThreadInvestigationRequest) {
     setRunning(true);
@@ -73,8 +149,8 @@ export default function SlackInvestigationPage() {
       const payload: SlackThreadInvestigationRequest = {
         ...data,
         site_id: data.site_id?.trim() || undefined,
-        hostname: data.hostname?.trim() || undefined,
         max_messages: data.max_messages || 200,
+        model_override: selectedModel || undefined,
       };
       const response = await investigateSlackThread(payload);
       setResult(response);
@@ -158,14 +234,36 @@ export default function SlackInvestigationPage() {
                   />
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div>
                   <div>
                     <label className="mb-1 block text-xs text-slate-300">Site ID</label>
-                    <input className="input" placeholder="cmlibr001" {...register("site_id")} />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-slate-300">Hostname</label>
-                    <input className="input" placeholder="amr11" {...register("hostname")} />
+                    <div className="relative">
+                      <select
+                        className="input appearance-none pr-10"
+                        disabled={sitesLoading || running}
+                        {...register("site_id")}
+                      >
+                        <option value="">
+                          {sitesLoading
+                            ? "Loading sites..."
+                            : sites.length > 0
+                              ? "Select a site (optional)"
+                              : "No sites available"}
+                        </option>
+                        {sites.map((site) => (
+                          <option key={site.id} value={site.id}>
+                            {site.name} ({site.id})
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
+                      />
+                    </div>
+                    {sitesError && (
+                      <p className="mt-1 text-xs text-amber-200">Unable to refresh sites: {sitesError}</p>
+                    )}
                   </div>
                 </div>
 
@@ -185,6 +283,36 @@ export default function SlackInvestigationPage() {
                     <input type="checkbox" className="rounded border-slate-600 bg-slate-800" {...register("include_bots")} />
                     Include bot messages
                   </label>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs text-slate-300">LLM Model</label>
+                  <div className="relative">
+                    <select
+                      className="input appearance-none pr-10"
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      disabled={running || !llmStatus}
+                    >
+                      {!llmStatus && (
+                        <option value="">Loading models...</option>
+                      )}
+                      {llmStatus && llmStatus.installed.map((m) => (
+                        <option key={m} value={m}>
+                          {m}{m === llmStatus.text_model ? " (default)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
+                    />
+                  </div>
+                  {llmStatus && (
+                    <p className="mt-1 text-xs text-slate-500">
+                      {llmStatus.installed.length} model{llmStatus.installed.length !== 1 ? "s" : ""} installed
+                    </p>
+                  )}
                 </div>
               </div>
             </section>
@@ -256,45 +384,88 @@ export default function SlackInvestigationPage() {
                     <span className="rounded-full border border-white/15 bg-white/[0.04] px-2.5 py-1 text-xs text-slate-200">
                       Participants: {result.participants.length}
                     </span>
+                    {result.model_used && (
+                      <span className="rounded-full border border-sky-400/25 bg-sky-500/10 px-2.5 py-1 text-xs text-sky-200">
+                        Model: {result.model_used}
+                      </span>
+                    )}
                   </div>
-
-                  <h2 className="text-sm font-semibold text-slate-100 [font-family:var(--font-slack-heading)]">Thread Summary</h2>
-                  <p className="mt-2 text-sm text-slate-300">{result.thread_summary}</p>
                 </section>
 
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <section className="rounded-2xl border border-slate-700/55 bg-slate-900/80 p-5">
-                    <h3 className="mb-2 text-sm font-semibold text-slate-100 [font-family:var(--font-slack-heading)]">Key Findings</h3>
-                    {result.key_findings.length === 0 ? (
-                      <p className="text-sm text-slate-500">No findings generated.</p>
-                    ) : (
-                      <ul className="space-y-2">
-                        {result.key_findings.map((item, idx) => (
-                          <li key={idx} className="flex items-start gap-2 text-sm text-slate-300">
-                            <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-300" />
-                            <span>{item}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
+                <section className="rounded-2xl border border-slate-700/55 bg-slate-900/80 p-5">
+                  {/* Single copy for all three sub-sections */}
+                  <div className="mb-4 flex items-center justify-between gap-2">
+                    <h2 className="text-sm font-semibold text-slate-100 [font-family:var(--font-slack-heading)]">Analysis</h2>
+                    <CopyButton
+                      text={[
+                        "## Thread Summary",
+                        result.thread_summary,
+                        "",
+                        "## Key Findings",
+                        result.key_findings.length > 0
+                          ? result.key_findings.map((f, i) => `${i + 1}. ${f}`).join("\n")
+                          : "No findings generated.",
+                        "",
+                        "## Recommended Actions",
+                        result.recommended_actions.length > 0
+                          ? result.recommended_actions.map((a, i) => `${i + 1}. ${a}`).join("\n")
+                          : "No actions generated.",
+                      ].join("\n")}
+                    />
+                  </div>
 
-                  <section className="rounded-2xl border border-slate-700/55 bg-slate-900/80 p-5">
-                    <h3 className="mb-2 text-sm font-semibold text-slate-100 [font-family:var(--font-slack-heading)]">Recommended Actions</h3>
-                    {result.recommended_actions.length === 0 ? (
-                      <p className="text-sm text-slate-500">No actions generated.</p>
-                    ) : (
-                      <ul className="space-y-2">
-                        {result.recommended_actions.map((item, idx) => (
-                          <li key={idx} className="flex items-start gap-2 text-sm text-slate-300">
-                            <ShieldAlert size={14} className="mt-0.5 shrink-0 text-amber-300" />
-                            <span>{item}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-                </div>
+                  <div className="space-y-5">
+                    {/* Thread Summary */}
+                    <div>
+                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
+                        Thread Summary
+                      </h3>
+                      <p className="text-sm text-slate-300">{result.thread_summary}</p>
+                    </div>
+
+                    <div className="border-t border-slate-700/50" />
+
+                    {/* Key Findings */}
+                    <div>
+                      <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
+                        Key Findings
+                      </h3>
+                      {result.key_findings.length === 0 ? (
+                        <p className="text-sm text-slate-500">No findings generated.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {result.key_findings.map((item, idx) => (
+                            <li key={idx} className="flex items-start gap-2 text-sm text-slate-300">
+                              <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-300" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-700/50" />
+
+                    {/* Recommended Actions */}
+                    <div>
+                      <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
+                        Recommended Actions
+                      </h3>
+                      {result.recommended_actions.length === 0 ? (
+                        <p className="text-sm text-slate-500">No actions generated.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {result.recommended_actions.map((item, idx) => (
+                            <li key={idx} className="flex items-start gap-2 text-sm text-slate-300">
+                              <ShieldAlert size={14} className="mt-0.5 shrink-0 text-amber-300" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </section>
 
                 <section className="rounded-2xl border border-slate-700/55 bg-slate-900/80 p-5">
                   <h3 className="mb-3 text-sm font-semibold text-slate-100 [font-family:var(--font-slack-heading)]">Thread Timeline</h3>

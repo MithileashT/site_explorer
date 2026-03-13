@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from core.logging import get_logger
 from schemas.slack_investigation import (
+    SlackLLMStatusResponse,
     SlackThreadInvestigationRequest,
     SlackThreadInvestigationResponse,
 )
@@ -22,6 +23,17 @@ def register_singletons(llm_service) -> None:
     _service = SlackInvestigationService(llm_service)
 
 
+@router.get("/api/v1/slack/status", tags=["slack"], response_model=SlackLLMStatusResponse)
+def slack_status() -> SlackLLMStatusResponse:
+    if _service is None:
+        raise HTTPException(503, "Slack investigation service unavailable.")
+    try:
+        return _service.llm_status()
+    except Exception as exc:
+        logger.error("Slack status check failed: %s", exc, exc_info=True)
+        raise HTTPException(500, f"Slack status check failed: {exc}") from exc
+
+
 @router.post("/api/v1/slack/investigate", tags=["slack"])
 def investigate_slack_thread(req: SlackThreadInvestigationRequest) -> SlackThreadInvestigationResponse:
     if _service is None:
@@ -36,3 +48,8 @@ def investigate_slack_thread(req: SlackThreadInvestigationRequest) -> SlackThrea
     except Exception as exc:
         logger.error("Slack investigation failed: %s", exc, exc_info=True)
         raise HTTPException(500, f"Slack investigation failed: {exc}") from exc
+
+
+@router.post("/api/v1/slack/thread/summary", tags=["slack"], response_model=SlackThreadInvestigationResponse)
+def summarize_slack_thread(req: SlackThreadInvestigationRequest) -> SlackThreadInvestigationResponse:
+    return investigate_slack_thread(req)

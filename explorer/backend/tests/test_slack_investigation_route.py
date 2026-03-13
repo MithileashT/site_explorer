@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.main import app
 from app.routes import slack_investigation
+from schemas.slack_investigation import SlackLLMStatusResponse
 from schemas.slack_investigation import SlackThreadInvestigationResponse
 
 client = TestClient(app)
@@ -34,6 +35,18 @@ class _StubService:
 class _FailingService:
     def investigate(self, _req):
         raise RuntimeError("SLACK_BOT_TOKEN is not configured on the backend.")
+
+
+class _StatusService:
+    def llm_status(self):
+        return SlackLLMStatusResponse(
+            status="online",
+            vision_model="llama3.2-vision:11b",
+            text_model="qwen2.5:7b",
+            vision_ready=True,
+            text_ready=True,
+            installed=["llama3.2-vision:11b", "qwen2.5:7b"],
+        )
 
 
 def test_slack_investigation_endpoint_success(monkeypatch) -> None:
@@ -62,3 +75,12 @@ def test_slack_investigation_endpoint_handles_runtime_error(monkeypatch) -> None
     )
     assert response.status_code == 503
     assert "SLACK_BOT_TOKEN" in response.json()["detail"]
+
+
+def test_slack_status_endpoint_success(monkeypatch) -> None:
+    monkeypatch.setattr(slack_investigation, "_service", _StatusService())
+    response = client.get("/api/v1/slack/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "online"
+    assert body["vision_ready"] is True

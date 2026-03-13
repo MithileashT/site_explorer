@@ -105,9 +105,19 @@ export interface SlackThreadInvestigationRequest {
   slack_thread_url: string;
   description: string;
   site_id?: string;
-  hostname?: string;
   include_bots?: boolean;
   max_messages?: number;
+  model_override?: string;
+}
+
+export interface SlackLLMStatusResponse {
+  status: "online" | "offline";
+  vision_model: string;
+  text_model: string;
+  vision_ready: boolean;
+  text_ready: boolean;
+  installed: string[];
+  fix?: string;
 }
 
 export interface SlackThreadInvestigationResponse {
@@ -121,6 +131,7 @@ export interface SlackThreadInvestigationResponse {
   key_findings: string[];
   recommended_actions: string[];
   risk_level: "low" | "medium" | "high";
+  model_used?: string;
   timeline: SlackThreadMessage[];
   raw_analysis: string;
 }
