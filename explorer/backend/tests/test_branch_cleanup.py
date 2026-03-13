@@ -33,7 +33,7 @@ def _mgr(remote_branches: List[str]) -> GitRepoManager:
     """Return a GitRepoManager whose `_git` is mocked to return *remote_branches*."""
     mgr = GitRepoManager("/fake/repo")
     branch_output = "\n".join(f"  origin/{b}" for b in remote_branches)
-    mgr._git = MagicMock(return_value=_make_git_result(branch_output))  # type: ignore[method-assign]
+    mgr._git = MagicMock(return_value=_make_git_result(branch_output))
     return mgr
 
 
@@ -137,7 +137,7 @@ class TestPruneInvalidRemoteRefs:
                 return _make_git_result("", prune_returncode)
             return _make_git_result("")
 
-        mgr._git = _fake_git  # type: ignore[method-assign]
+        mgr._git = _fake_git
         return mgr
 
     def test_removes_invalid_branches(self):
@@ -188,7 +188,7 @@ class TestPruneInvalidRemoteRefs:
                 return _make_git_result(branch_output)
             return _make_git_result("", 0)
 
-        mgr._git = _spy  # type: ignore[method-assign]
+        mgr._git = _spy
         mgr.prune_invalid_remote_refs([])
 
         for cmd in called_commands:

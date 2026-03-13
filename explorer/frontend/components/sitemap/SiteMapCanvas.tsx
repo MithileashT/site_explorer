@@ -55,6 +55,8 @@ export interface SiteMapCanvasHandle {
   fitMap(): void;
 }
 
+const SEARCH_TRANSITION_DURATION_MS = 220;
+
 // ── Coordinate helpers ─────────────────────────────────────────────────────────
 
 export function worldToPixel(
@@ -381,10 +383,30 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
         const matched = csq !== "" && (String(node.id) === csq || `node ${node.id}` === csq);
         const r = (matched ? 7 : isHovered ? 6 : 4.5) / scale;
 
+        // Pulsing neon glow for search-matched nodes
+        if (matched) {
+          const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 700) * Math.PI);
+          const glowR = r * 5;
+          const grad = ctx.createRadialGradient(px, py, r * 0.5, px, py, glowR);
+          grad.addColorStop(0, `rgba(255, 20, 147, ${0.75 * pulse})`);
+          grad.addColorStop(0.45, `rgba(255, 105, 180, ${0.45 * pulse})`);
+          grad.addColorStop(1, `rgba(255, 105, 180, 0)`);
+          ctx.beginPath();
+          ctx.arc(px, py, glowR, 0, Math.PI * 2);
+          ctx.fillStyle = grad;
+          ctx.fill();
+          // Sharp pulsing ring
+          ctx.beginPath();
+          ctx.arc(px, py, r * 2.8, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 20, 147, ${0.9 * pulse})`;
+          ctx.lineWidth = 1.8 / scale;
+          ctx.stroke();
+        }
+
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
         if (matched) {
-          ctx.fillStyle = "#facc15";
+          ctx.fillStyle = "#ff1493";
         } else if (node.parkable) {
           ctx.fillStyle = isHovered ? "#6ee7b7" : "#34d399";
         } else {
@@ -393,7 +415,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
         ctx.fill();
 
         ctx.strokeStyle = matched
-          ? "#f59e0b"
+          ? "#ff69b4"
           : isHovered
           ? "#ffffff"
           : "rgba(255,255,255,0.55)";
@@ -526,13 +548,23 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
 
         ctx.restore();
 
-        // Matched: glow ring (in image-pixel space, outside the save/restore block)
+        // Matched: pulsing neon glow (in image-pixel space, outside the save/restore block)
         if (rackMatched) {
-          const glowR = (screenPx * 0.9) / scale;
+          const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 700) * Math.PI);
+          const glowR = (screenPx * 1.6) / scale;
+          const grad = ctx.createRadialGradient(px, py, (screenPx * 0.4) / scale, px, py, glowR);
+          grad.addColorStop(0, `rgba(251, 191, 36, ${0.7 * pulse})`);
+          grad.addColorStop(0.5, `rgba(251, 100, 20, ${0.4 * pulse})`);
+          grad.addColorStop(1, `rgba(251, 100, 20, 0)`);
           ctx.beginPath();
           ctx.arc(px, py, glowR, 0, Math.PI * 2);
-          ctx.strokeStyle = "rgba(251,191,36,0.30)";
-          ctx.lineWidth   = 3 / scale;
+          ctx.fillStyle = grad;
+          ctx.fill();
+          // Sharp pulsing ring
+          ctx.beginPath();
+          ctx.arc(px, py, (screenPx * 0.9) / scale, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(251, 191, 36, ${0.95 * pulse})`;
+          ctx.lineWidth   = 2.5 / scale;
           ctx.stroke();
         }
 
@@ -595,14 +627,34 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
         // Base radius: always ≥5px on screen; larger for selected/matched
         const r = (matched ? 8 : isHovered ? 7 : 5) / scale;
 
+        // Pulsing neon glow for search-matched spots
+        if (matched) {
+          const pulse = 0.5 + 0.5 * Math.sin((performance.now() / 700) * Math.PI);
+          const glowR = r * 5;
+          const grad = ctx.createRadialGradient(px, py, r * 0.5, px, py, glowR);
+          grad.addColorStop(0, `rgba(255, 20, 147, ${0.75 * pulse})`);
+          grad.addColorStop(0.45, `rgba(255, 105, 180, ${0.4 * pulse})`);
+          grad.addColorStop(1, `rgba(255, 105, 180, 0)`);
+          ctx.beginPath();
+          ctx.arc(px, py, glowR, 0, Math.PI * 2);
+          ctx.fillStyle = grad;
+          ctx.fill();
+          // Sharp pulsing ring
+          ctx.beginPath();
+          ctx.arc(px, py, r * 2.8, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 20, 147, ${0.9 * pulse})`;
+          ctx.lineWidth = 1.8 / scale;
+          ctx.stroke();
+        }
+
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
-        ctx.fillStyle = matched ? "#facc15" : spot.color;
+        ctx.fillStyle = matched ? "#ff1493" : spot.color;
         ctx.fill();
 
         // Always draw outline — makes spots pop on dark map background
         ctx.strokeStyle = matched
-          ? "#fbbf24"
+          ? "#ff69b4"
           : isHovered
           ? "#ffffff"
           : "rgba(255,255,255,0.45)";
@@ -827,48 +879,88 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
       const ft = focusTargetRef.current;
       if (ft) {
         const elapsed  = (performance.now() - ft.startMs) / 1000;
-        const lifetime = 2.8;
+        const lifetime = 3.2;
         if (elapsed < lifetime) {
           const { scale, panX, panY } = transformRef.current;
           const sx = ft.px * scale + panX;
           const sy = ft.py * scale + panY;
           const t     = elapsed / lifetime;
-          const alpha = Math.pow(1 - t, 1.5); // ease-out fade
+          const alpha = Math.pow(1 - t, 1.4);
 
           ctx.save();
 
-          // Outer expanding ring
+          // Radial glow backdrop
+          const bgGlowR = 80;
+          const bgGrad  = ctx.createRadialGradient(sx, sy, 8, sx, sy, bgGlowR);
+          bgGrad.addColorStop(0, `rgba(255, 20, 147, ${alpha * 0.22})`);
+          bgGrad.addColorStop(0.45, `rgba(255, 105, 180, ${alpha * 0.12})`);
+          bgGrad.addColorStop(1, `rgba(255, 105, 180, 0)`);
           ctx.beginPath();
-          ctx.arc(sx, sy, 20 + t * 60, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(250, 204, 21, ${alpha * 0.55})`;
+          ctx.arc(sx, sy, bgGlowR, 0, Math.PI * 2);
+          ctx.fillStyle = bgGrad;
+          ctx.fill();
+
+          // Outer expanding ring — hot pink
+          ctx.beginPath();
+          ctx.arc(sx, sy, 22 + t * 72, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 20, 147, ${alpha * 0.50})`;
           ctx.lineWidth   = 2;
           ctx.stroke();
 
-          // Inner expanding ring (brighter)
+          // Middle expanding ring — light pink
           ctx.beginPath();
-          ctx.arc(sx, sy, 10 + t * 40, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(250, 204, 21, ${alpha * 0.9})`;
+          ctx.arc(sx, sy, 14 + t * 50, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 105, 180, ${alpha * 0.75})`;
+          ctx.lineWidth   = 2.5;
+          ctx.stroke();
+
+          // Inner tight ring — white-hot
+          ctx.beginPath();
+          ctx.arc(sx, sy, 6 + t * 24, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.85})`;
+          ctx.lineWidth   = 1.5;
+          ctx.stroke();
+
+          // Rotating scanner arc
+          const angle = elapsed * 3.5;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 12 + t * 34, angle, angle + Math.PI * 0.55);
+          ctx.strokeStyle = `rgba(255, 20, 147, ${alpha * 0.95})`;
           ctx.lineWidth   = 3;
           ctx.stroke();
 
-          // Centre filled dot
+          // Centre dot with strong glow
+          ctx.shadowColor = "#ff1493";
+          ctx.shadowBlur  = 22 * alpha;
           ctx.beginPath();
-          ctx.arc(sx, sy, 5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(250, 204, 21, ${Math.max(0.3, alpha)})`;
-          ctx.shadowColor = "#facc15";
-          ctx.shadowBlur  = 12;
+          ctx.arc(sx, sy, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 20, 147, ${Math.max(0.4, alpha)})`;
           ctx.fill();
           ctx.shadowBlur  = 0;
 
           // Crosshair lines
-          ctx.strokeStyle = `rgba(250, 204, 21, ${alpha * 0.75})`;
+          const crossLen = 26;
+          ctx.strokeStyle = `rgba(255, 20, 147, ${alpha * 0.80})`;
           ctx.lineWidth   = 1.5;
           ctx.beginPath();
-          ctx.moveTo(sx - 22, sy);
-          ctx.lineTo(sx + 22, sy);
-          ctx.moveTo(sx, sy - 22);
-          ctx.lineTo(sx, sy + 22);
+          ctx.moveTo(sx - crossLen, sy);
+          ctx.lineTo(sx + crossLen, sy);
+          ctx.moveTo(sx, sy - crossLen);
+          ctx.lineTo(sx, sy + crossLen);
           ctx.stroke();
+
+          // Corner bracket marks
+          const bSize = 9;
+          const bDist = 17;
+          ctx.strokeStyle = `rgba(255, 105, 180, ${alpha * 0.85})`;
+          ctx.lineWidth   = 2;
+          ([[1, 1], [1, -1], [-1, 1], [-1, -1]] as [number, number][]).forEach(([dx, dy]) => {
+            ctx.beginPath();
+            ctx.moveTo(sx + dx * bDist, sy + dy * (bDist + bSize));
+            ctx.lineTo(sx + dx * bDist, sy + dy * bDist);
+            ctx.lineTo(sx + dx * (bDist + bSize), sy + dy * bDist);
+            ctx.stroke();
+          });
 
           ctx.restore();
         } else {
@@ -1142,7 +1234,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
     const targetPanX = cW / 2 - pixX * ts;
     const targetPanY = cH / 2 - pixY * ts;
 
-    const duration = 450; // ms
+    const duration = SEARCH_TRANSITION_DURATION_MS;
     const startTime = performance.now();
 
     const animate = (now: number) => {
@@ -1177,7 +1269,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
     const targetPanY  = (cH - meta.height * targetScale) / 2;
 
     const { scale: s0, panX: px0, panY: py0 } = transformRef.current;
-    const duration = 450;
+    const duration = SEARCH_TRANSITION_DURATION_MS;
     const startTime = performance.now();
 
     const animate = (now: number) => {

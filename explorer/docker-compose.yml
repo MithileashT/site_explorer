@@ -17,7 +17,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     ports:
-      - "11434:11434"
+      - "11435:11434"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "ollama", "list"]
@@ -36,6 +36,7 @@ services:
       - ./backend/.env
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434/v1
+      - OLLAMA_TEXT_MODEL=llama3.1:8b
       - BAG_UPLOAD_DIR=/app/data/bags
       - SITES_ROOT=/app/data/sites
       - FAISS_PATH=/app/data/faiss.index
@@ -46,6 +47,7 @@ services:
       - GIT_CONFIG_KEY_0=safe.directory
       - GIT_CONFIG_VALUE_0=/app/sootballs_sites
     volumes:
+      - ./backend/.env:/app/.env:ro
       - bag_data:/app/data/bags
       - faiss_data:/app/data
       - sites_data:/app/data/sites

@@ -34,7 +34,7 @@ def _svc(yaml_content: str | None) -> SiteMapService:
     """Return a SiteMapService whose _read_bytes is mocked to return *yaml_content*."""
     svc = SiteMapService("/fake/root")
     raw = yaml_content.encode() if isinstance(yaml_content, str) else yaml_content
-    svc._read_bytes = lambda *_: raw  # type: ignore[method-assign]
+    svc._read_bytes = lambda *_: raw
     return svc
 
 

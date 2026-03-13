@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 class IncidentReportRequest(BaseModel):
     """Submitted by the operator to start an investigation."""
-    title:             str
+    title:             Optional[str]   = None
     description:       str
     bag_path:          Optional[str]   = None
     site_id:           Optional[str]   = None
