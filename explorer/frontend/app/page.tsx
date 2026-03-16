@@ -78,7 +78,7 @@ function SiteCard({ site }: { site: SiteInfo }) {
 
 const QUICK_LINKS = [
   { href: "/bags",        icon: PackageSearch, label: "Analyze a Bag",    desc: "Upload & extract ROS logs"  },
-  { href: "/investigate", icon: SearchCode,    label: "Investigate",      desc: "AI-powered incident analysis"},
+  { href: "/investigate", icon: SearchCode,    label: "Log Analyzer",      desc: "AI-powered incident analysis"},
   { href: "/assistant",   icon: Bot,           label: "AI Assistant",     desc: "Chat with streaming AI"     },
 ];
 

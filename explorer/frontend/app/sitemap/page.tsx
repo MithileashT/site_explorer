@@ -12,11 +12,14 @@ import type {
   SiteMapData,
   SiteMapSpot,
   SiteMapMarker,
+  TrajectoryPoint,
 } from "@/lib/types";
 import { useOutsideClick } from "@/hooks/useOutsideClick";
 import { useBranchManager } from "@/hooks/useBranchManager";
 import { useCleanupModal } from "@/hooks/useCleanupModal";
 import SiteMapCanvas, { type Layers, type SiteMapCanvasHandle, worldToPixel } from "@/components/sitemap/SiteMapCanvas";
+import BagUploadPanel from "@/components/sitemap/BagUploadPanel";
+import PlaybackPanel from "@/components/sitemap/PlaybackPanel";
 import {
   Map,
   Search,
@@ -72,6 +75,28 @@ export default function SiteMapPage() {
   const [markers,  setMarkers]  = useState<SiteMapMarker[]>([]);
   const [loading,  setLoading]  = useState(false);
   const [mapErr,   setMapErr]   = useState("");
+
+  // Trajectory state (from ROS bag upload)
+  const [trajectory,    setTrajectory]    = useState<TrajectoryPoint[]>([]);
+  const [trajectoryBag, setTrajectoryBag] = useState("");
+  const [trajectoryWarning, setTrajectoryWarning] = useState("");
+
+  // Playback state
+  const [playbackIndex, setPlaybackIndex] = useState<number | undefined>(undefined);
+  const [isPlaying,     setIsPlaying]     = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const playbackRafRef = useRef<number>(0);
+  const playbackLastRef = useRef<number>(0);
+
+  // Pending trajectory ref — holds trajectory data while waiting for site load
+  const pendingTrajectoryRef = useRef<{
+    points: TrajectoryPoint[];
+    bagName: string;
+  } | null>(null);
+
+  // Keep a ref to current trajectory so loadSite can re-validate without stale closure
+  const trajectoryRef = useRef<TrajectoryPoint[]>([]);
+  useEffect(() => { trajectoryRef.current = trajectory; }, [trajectory]);
 
   // UI
   const [inputText,     setInputText]     = useState("");
@@ -142,6 +167,90 @@ export default function SiteMapPage() {
 
   // ── Load site map when siteId changes ─────────────────────────────────────
 
+  /** Check whether trajectory points fall within the map's world-frame bounds. */
+  const validateTrajectoryBounds = useCallback(
+    (points: TrajectoryPoint[], mapMeta: SiteMapMeta): string => {
+      if (!points.length) return "";
+      const mapMinX = mapMeta.origin[0];
+      const mapMinY = mapMeta.origin[1];
+      const mapMaxX = mapMinX + mapMeta.width * mapMeta.resolution;
+      const mapMaxY = mapMinY + mapMeta.height * mapMeta.resolution;
+      let outside = 0;
+      for (const pt of points) {
+        if (pt.x < mapMinX || pt.x > mapMaxX || pt.y < mapMinY || pt.y > mapMaxY) {
+          outside++;
+        }
+      }
+      if (outside === 0) return "";
+      const pct = Math.round((outside / points.length) * 100);
+      if (pct > 80) return `Warning: ${pct}% of trajectory points are outside the map bounds — possible site mismatch.`;
+      if (pct > 0) return `${pct}% of points fall outside the visible map area.`;
+      return "";
+    },
+    []
+  );
+
+  // ── Playback logic ──────────────────────────────────────────────────────────
+
+  // Animation loop: advance playbackIndex based on trajectory timestamps and speed
+  useEffect(() => {
+    if (!isPlaying || trajectory.length < 2 || playbackIndex == null) return;
+
+    playbackLastRef.current = performance.now();
+
+    const tick = (now: number) => {
+      const dt = (now - playbackLastRef.current) / 1000; // seconds elapsed
+      playbackLastRef.current = now;
+
+      setPlaybackIndex(prev => {
+        if (prev == null) return prev;
+        const curTime = trajectory[prev].timestamp;
+        const advance = dt * playbackSpeed;
+        const targetTime = curTime + advance;
+
+        // Binary search for the next index matching targetTime
+        let next = prev;
+        while (next < trajectory.length - 1 && trajectory[next + 1].timestamp <= targetTime) {
+          next++;
+        }
+
+        if (next >= trajectory.length - 1) {
+          // Reached end — stop playing
+          setIsPlaying(false);
+          return trajectory.length - 1;
+        }
+        return next;
+      });
+
+      playbackRafRef.current = requestAnimationFrame(tick);
+    };
+
+    playbackRafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(playbackRafRef.current);
+  }, [isPlaying, trajectory, playbackSpeed, playbackIndex]);
+
+  const handlePlayPause = useCallback(() => {
+    if (trajectory.length < 2) return;
+    if (isPlaying) {
+      setIsPlaying(false);
+    } else {
+      // If at the end, restart
+      if (playbackIndex == null || playbackIndex >= trajectory.length - 1) {
+        setPlaybackIndex(0);
+      }
+      setIsPlaying(true);
+    }
+  }, [isPlaying, playbackIndex, trajectory.length]);
+
+  const handlePlaybackStop = useCallback(() => {
+    setIsPlaying(false);
+    setPlaybackIndex(undefined);
+  }, []);
+
+  const handlePlaybackSeek = useCallback((index: number) => {
+    setPlaybackIndex(index);
+  }, []);
+
   const loadSite = useCallback(async (id: string) => {
     if (!id) return;
     setLoading(true);
@@ -162,12 +271,36 @@ export default function SiteMapPage() {
       setMarkers(markersRes.markers);
       // Non-blocking: refresh branch info (covers same-siteId reloads not caught by the hook's effect)
       refreshBranchInfo(id);
+
+      // Apply pending trajectory if one was queued during a site switch
+      const pending = pendingTrajectoryRef.current;
+      if (pending) {
+        pendingTrajectoryRef.current = null;
+        // Bounds check: verify trajectory falls within the loaded map
+        const boundsWarn = validateTrajectoryBounds(pending.points, metaRes);
+        // Append bounds warning to any existing frame warning
+        setTrajectoryWarning(prev => {
+          if (!prev && !boundsWarn) return "";
+          return [prev, boundsWarn].filter(Boolean).join(" ");
+        });
+        setTrajectory(pending.points);
+        setTrajectoryBag(pending.bagName);
+      } else if (trajectoryRef.current.length > 0) {
+        // Existing trajectory — re-validate bounds against the new site's map
+        const boundsWarn = validateTrajectoryBounds(trajectoryRef.current, metaRes);
+        setTrajectoryWarning(boundsWarn);
+      }
     } catch (e: unknown) {
       setMapErr(e instanceof Error ? e.message : "Failed to load site map");
+      // Clear pending trajectory on load failure
+      if (pendingTrajectoryRef.current) {
+        pendingTrajectoryRef.current = null;
+        setTrajectoryWarning("Site failed to load — trajectory not applied.");
+      }
     } finally {
       setLoading(false);
     }
-  }, [refreshBranchInfo, setBranchInfo]);
+  }, [refreshBranchInfo, setBranchInfo, validateTrajectoryBounds]);
 
   useEffect(() => {
     if (siteId) loadSite(siteId);
@@ -876,8 +1009,8 @@ export default function SiteMapPage() {
 
         {/* ── Centre: map canvas ───────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden bg-[#0a0f1a]">
-          {/* Map area */}
-          <div className="flex-1 relative overflow-hidden">
+          {/* Map area — bottom padding reserves space for the collapsed bag panel (h-10) */}
+          <div className="flex-1 relative overflow-hidden pb-10">
             {mapErr && (
               <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
                 <div className="bg-[#0f172a]/90 border border-red-500/20 rounded-xl px-5 py-3 text-red-400 text-sm backdrop-blur-sm">
@@ -906,6 +1039,8 @@ export default function SiteMapPage() {
                 hiddenSpotTypes={hiddenSpotTypes}
                 hiddenRegionTypes={hiddenRegionTypes}
                 onSpotSelect={setSelectedSpot}
+                trajectory={trajectory}
+                playbackIndex={playbackIndex}
               />
             ) : !loading && !mapErr ? (
               <div className="absolute inset-0 flex items-center justify-center">
@@ -949,9 +1084,84 @@ export default function SiteMapPage() {
               </div>
             )}
 
+            {/* Trajectory info badge */}
+            {trajectory.length > 0 && (
+              <div className="absolute bottom-12 left-3 z-10 flex items-center gap-1.5 text-[10px] bg-[#0f172a]/90 border border-cyan-500/30 rounded-lg px-2.5 py-1.5 backdrop-blur-sm">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_6px_cyan]" />
+                <span className="text-cyan-300 font-medium">{trajectory.length.toLocaleString()} poses</span>
+                {trajectoryBag && (
+                  <span className="text-slate-500 truncate max-w-[120px]">· {trajectoryBag}</span>
+                )}
+              </div>
+            )}
+
+            {/* Trajectory bounds warning */}
+            {trajectoryWarning && (
+              <div className="absolute bottom-12 right-3 z-10 flex items-center gap-1.5 text-[10px] bg-[#0f172a]/90 border border-amber-500/30 rounded-lg px-2.5 py-1.5 backdrop-blur-sm max-w-xs">
+                <AlertTriangle size={11} className="text-amber-400 shrink-0" />
+                <span className="text-amber-300">{trajectoryWarning}</span>
+              </div>
+            )}
+
+            {/* Playback controls — shown when trajectory is loaded */}
+            {trajectory.length >= 2 && (
+              <div className="absolute bottom-10 left-0 right-0 z-15">
+                <PlaybackPanel
+                  trajectory={trajectory}
+                  playbackIndex={playbackIndex ?? 0}
+                  isPlaying={isPlaying}
+                  speed={playbackSpeed}
+                  onPlayPause={handlePlayPause}
+                  onStop={handlePlaybackStop}
+                  onSeek={handlePlaybackSeek}
+                  onSpeedChange={setPlaybackSpeed}
+                />
+              </div>
+            )}
+
+            {/* ROS Bag Upload Panel */}
+            <BagUploadPanel
+              currentSiteId={siteId}
+              sites={sites}
+              hasTrajectory={trajectory.length > 0}
+              onTrajectoryLoaded={(pts, bagName, trajSiteId, frameId) => {
+                // Build frame warning for odom-frame trajectories
+                const isOdom = frameId != null && frameId.toLowerCase().includes("odom");
+                const frameWarn = isOdom
+                  ? "Trajectory uses odom frame — coordinates may not align with the map. Prefer a bag with /amcl_pose or /robot_pose for accurate overlay."
+                  : "";
+
+                if (trajSiteId && trajSiteId !== siteId) {
+                  // Site differs — queue trajectory and switch site (loadSite will apply it)
+                  pendingTrajectoryRef.current = { points: pts, bagName };
+                  setTrajectory([]);
+                  setTrajectoryBag("");
+                  setTrajectoryWarning(frameWarn);
+                  setSiteId(trajSiteId);
+                } else {
+                  // Same site — apply immediately, run bounds check
+                  let warning = frameWarn;
+                  if (meta) {
+                    const boundsWarn = validateTrajectoryBounds(pts, meta);
+                    if (boundsWarn) warning = warning ? `${warning} ${boundsWarn}` : boundsWarn;
+                  }
+                  setTrajectoryWarning(warning);
+                  setTrajectory(pts);
+                  setTrajectoryBag(bagName);
+                }
+              }}
+              onTrajectoryClear={() => {
+                setTrajectory([]);
+                setTrajectoryBag("");
+                setTrajectoryWarning("");
+                setIsPlaying(false);
+                setPlaybackIndex(undefined);
+              }}
+            />
           </div>
         </main>
       </div>
+
     </div>
   );
 }

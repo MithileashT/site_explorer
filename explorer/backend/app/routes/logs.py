@@ -20,6 +20,7 @@ import re
 import time
 from typing import List, Optional
 
+import requests
 from fastapi import APIRouter, HTTPException, Query
 
 from core.config import settings
@@ -286,10 +287,6 @@ def debug_labels(
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise _classify_error(exc) from exc
-
-
-# Need requests import for the debug endpoint exception handler
-import requests  # noqa: E402
 
 
 # ── Legacy endpoint (backward compat) ─────────────────────────────────────────

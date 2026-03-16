@@ -20,6 +20,8 @@ import type {
   SlackThreadInvestigationRequest,
   SlackThreadInvestigationResponse,
   SlackLLMStatusResponse,
+  TrajectoryResponse,
+  BagTopicsResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -127,6 +129,32 @@ export async function runMapDiff(
   const { data } = await http.post<MapDiffResponse>("/bags/mapdiff", {
     bag_path: bagPath,
     topic_override: topicOverride,
+  });
+  return data;
+}
+
+export async function extractBagTrajectory(
+  bagPath: string,
+  siteId?: string,
+  maxPoints = 4000,
+  topicOverride?: string,
+  smooth = true
+): Promise<TrajectoryResponse> {
+  const { data } = await http.post<TrajectoryResponse>("/bags/trajectory", {
+    bag_path:       bagPath,
+    site_id:        siteId ?? null,
+    max_points:     maxPoints,
+    topic_override: topicOverride ?? null,
+    smooth,
+  });
+  return data;
+}
+
+export async function listBagTopics(
+  bagPath: string
+): Promise<BagTopicsResponse> {
+  const { data } = await http.get<BagTopicsResponse>("/bags/topics", {
+    params: { bag_path: bagPath },
   });
   return data;
 }
@@ -244,7 +272,12 @@ export async function runBranchCleanup(): Promise<BranchCleanupResult> {
 export async function investigateSlackThread(
   payload: SlackThreadInvestigationRequest
 ): Promise<SlackThreadInvestigationResponse> {
-  const { data } = await http.post<SlackThreadInvestigationResponse>("/slack/investigate", payload);
+  // LLM inference on CPU can take several minutes — use a dedicated long timeout.
+  const { data } = await http.post<SlackThreadInvestigationResponse>(
+    "/slack/investigate",
+    payload,
+    { timeout: 720_000 },  // 12 minutes
+  );
   return data;
 }
 
@@ -293,22 +326,24 @@ export async function analyseLogsAndSlack(payload: AnalyseRequest): Promise<Anal
 // ── Log Viewer (Grafana-style) ──────────────────────────────────────────────
 
 export async function fetchLogHostnames(
+  env: string,
   site: string,
   datasource?: string,
 ): Promise<string[]> {
   const { data } = await http.get<string[]>("/logs/hostnames", {
-    params: { site, datasource },
+    params: { env, site, datasource },
   });
   return data;
 }
 
 export async function fetchLogDeployments(
+  env: string,
   site: string,
   hostname?: string,
   datasource?: string,
 ): Promise<string[]> {
   const { data } = await http.get<string[]>("/logs/deployments", {
-    params: { site, hostname, datasource },
+    params: { env, site, hostname, datasource },
   });
   return data;
 }

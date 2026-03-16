@@ -45,8 +45,11 @@ class _Settings:
         "OLLAMA_HOST",
         os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").removesuffix("/v1"),
     )
-    ollama_vision_model: str = os.getenv("OLLAMA_VISION_MODEL", "llama3.2-vision:11b")
     ollama_text_model: str = os.getenv("OLLAMA_TEXT_MODEL", "qwen2.5:7b")
+    ollama_vision_model: str = os.getenv("OLLAMA_VISION_MODEL", "llava:7b")
+    # Context window for Ollama inference.
+    # 4096 is safe for CPU-only deployments; increase for GPU setups.
+    ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 
     # ── Server ───────────────────────────────────────────────────────────────
     host:      str = os.getenv("HOST",      "0.0.0.0")
@@ -86,7 +89,7 @@ class _Settings:
 
     # ── CORS ─────────────────────────────────────────────────────────────────
     allowed_origins: list = os.getenv(
-        "ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001"
+        "ALLOWED_ORIGINS", "http://localhost,http://localhost:80,http://localhost:3000,http://localhost:3001"
     ).split(",")
 
 

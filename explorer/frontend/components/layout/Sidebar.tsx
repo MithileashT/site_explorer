@@ -17,7 +17,7 @@ const NAV = [
   { href: "/",           label: "Dashboard",     icon: LayoutDashboard },
   { href: "/sitemap",    label: "Site Map",       icon: Warehouse       },
   { href: "/bags",       label: "Bag Analyzer",  icon: PackageSearch   },
-  { href: "/investigate",label: "Investigate",   icon: SearchCode      },
+  { href: "/investigate",label: "Log Analyzer",   icon: SearchCode      },
   { href: "/slack-investigation", label: "Slack Investigation", icon: MessagesSquare },
   { href: "/assistant",  label: "AI Assistant",  icon: Bot             },
 ];

@@ -133,7 +133,6 @@ export default function SlackInvestigationPage() {
     getSlackLLMStatus()
       .then((s) => {
         setLlmStatus(s);
-        // Pre-select the default text model
         setSelectedModel(s.text_model);
       })
       .catch(() => {
@@ -297,11 +296,19 @@ export default function SlackInvestigationPage() {
                       {!llmStatus && (
                         <option value="">Loading models...</option>
                       )}
-                      {llmStatus && llmStatus.installed.map((m) => (
-                        <option key={m} value={m}>
-                          {m}{m === llmStatus.text_model ? " (default)" : ""}
-                        </option>
-                      ))}
+                      {llmStatus && llmStatus.installed.length === 0 && (
+                        <option value="">No models installed</option>
+                      )}
+                      {llmStatus && llmStatus.installed.length > 0 && (
+                        <>
+                          {llmStatus.installed.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                              {m === llmStatus.text_model ? " (default)" : ""}
+                            </option>
+                          ))}
+                        </>
+                      )}
                     </select>
                     <ChevronDown
                       size={14}
@@ -309,7 +316,7 @@ export default function SlackInvestigationPage() {
                     />
                   </div>
                   {llmStatus && (
-                    <p className="mt-1 text-xs text-slate-500">
+                    <p className="mt-0.5 text-[10px] text-slate-600">
                       {llmStatus.installed.length} model{llmStatus.installed.length !== 1 ? "s" : ""} installed
                     </p>
                   )}
@@ -420,7 +427,36 @@ export default function SlackInvestigationPage() {
                       <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
                         Thread Summary
                       </h3>
-                      <p className="text-sm text-slate-300">{result.thread_summary}</p>
+                      <div className="space-y-3 text-sm text-slate-300">
+                        {result.thread_summary.split("\n\n").map((block, bi) => {
+                          const boldMatch = block.match(/^\*\*(.+?)\*\*\n?([\s\S]*)$/);
+                          if (boldMatch) {
+                            const heading = boldMatch[1];
+                            const body = boldMatch[2].trim();
+                            const bullets = body.split("\n").filter((l) => l.trim().startsWith("-"));
+                            return (
+                              <div key={bi}>
+                                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                  {heading}
+                                </p>
+                                {bullets.length > 0 ? (
+                                  <ul className="space-y-1 pl-1">
+                                    {bullets.map((b, idx) => (
+                                      <li key={idx} className="flex items-start gap-2">
+                                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400/60" />
+                                        <span>{b.replace(/^-\s*/, "")}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p>{body}</p>
+                                )}
+                              </div>
+                            );
+                          }
+                          return <p key={bi} className="whitespace-pre-wrap">{block}</p>;
+                        })}
+                      </div>
                     </div>
 
                     <div className="border-t border-slate-700/50" />

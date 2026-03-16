@@ -37,9 +37,7 @@ class SlackThreadMessage(BaseModel):
 
 class SlackLLMStatusResponse(BaseModel):
     status: str  # online | offline
-    vision_model: str
     text_model: str
-    vision_ready: bool
     text_ready: bool
     installed: List[str]
     fix: Optional[str] = None
@@ -52,7 +50,6 @@ class SlackThreadInvestigationResponse(BaseModel):
     thread_ts: str
     message_count: int
     attachment_count: int = 0
-    has_images: bool = False
     model_used: str = ""
     participants: List[str] = []
     thread_summary: str

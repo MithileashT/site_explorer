@@ -16,10 +16,13 @@ from core.logging import get_logger
 from schemas.bag_analysis import (
     BagLogAnalysisRequest, BagLogAnalysisResponse, BagTimeline, MapDiffRequest,
     MapDiffResponse, LogEntry, TimelineBucket,
+    TrajectoryRequest, TrajectoryResponse, TrajectoryPoint,
+    BagTopicInfo, BagTopicsResponse,
 )
 from services.ros.log_extractor import ROSLogExtractor
 from services.ros.log_analyzer_engine import LogAnalyzerEngine
 from services.ros.map_processor import process_bag_for_changes
+from services.ros.trajectory_extractor import TrajectoryExtractor
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -233,5 +236,56 @@ def map_diff(req: MapDiffRequest):
         iou_score      = round(min(1.0, max(0.0, score / 100.0)), 4),
         diff_image_b64 = diff_b64,          # raw base64, no data: prefix
         message        = f"IoU score: {score:.1f}%",
+    )
+
+
+@router.post("/api/v1/bags/trajectory", tags=["bags"])
+def extract_trajectory(req: TrajectoryRequest):
+    """Extract AMR trajectory path from a ROS bag and return world-frame poses."""
+    if not os.path.exists(req.bag_path):
+        raise HTTPException(404, f"Bag not found: {req.bag_path}")
+
+    max_pts = max(2, min(10_000, req.max_points))
+    extractor = TrajectoryExtractor(req.bag_path)
+    result = extractor.extract(
+        max_points=max_pts,
+        topic_override=req.topic_override,
+        smooth=req.smooth,
+    )
+
+    if result["error"] and not result["points"]:
+        raise HTTPException(422, result["error"])
+
+    points = [
+        TrajectoryPoint(
+            x=p["x"], y=p["y"], yaw=p["yaw"], timestamp=p["timestamp"]
+        )
+        for p in result["points"]
+    ]
+
+    return TrajectoryResponse(
+        bag_path     = req.bag_path,
+        site_id      = req.site_id,
+        topic        = result["topic"],
+        total_points = result["total"],
+        raw_count    = result.get("raw_count", result["total"]),
+        points       = points,
+        error        = result["error"],
+        frame_id     = result.get("frame_id"),
+    )
+
+
+@router.get("/api/v1/bags/topics", tags=["bags"])
+def list_bag_topics(bag_path: str = Query(...)):
+    """List all topics in a ROS bag with message types and counts."""
+    if not os.path.exists(bag_path):
+        raise HTTPException(404, f"Bag not found: {bag_path}")
+
+    extractor = TrajectoryExtractor(bag_path)
+    topics = extractor.list_topics()
+
+    return BagTopicsResponse(
+        bag_path=bag_path,
+        topics=[BagTopicInfo(**t) for t in topics],
     )
 

@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from core.config import _Settings, settings
+from core.config import settings
 from schemas.slack_investigation import (
     SlackThreadAttachment,
     SlackThreadInvestigationRequest,
@@ -77,9 +77,6 @@ class TestConfigDefaults:
     so we test the resolution expressions directly rather than re-instantiating.
     """
 
-    def test_default_vision_model(self):
-        assert settings.ollama_vision_model == os.getenv("OLLAMA_VISION_MODEL", "llama3.2-vision:11b")
-
     def test_default_text_model(self):
         assert settings.ollama_text_model == os.getenv("OLLAMA_TEXT_MODEL", "qwen2.5:7b")
 
@@ -96,7 +93,6 @@ class TestConfigDefaults:
     def test_service_reads_models_from_settings(self):
         """SlackInvestigationService picks up model names from settings."""
         svc = _make_svc()
-        assert svc.vision_model == settings.ollama_vision_model
         assert svc.text_model == settings.ollama_text_model
         assert svc.ollama_host == settings.ollama_host.rstrip("/")
 
@@ -110,43 +106,40 @@ class TestModelSelection:
         svc = _make_svc()
         monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
 
-        _, model, has_images = svc._generate_summary(
+        _, model = svc._generate_summary(
             _make_req(), _text_messages(), [],
         )
-        assert has_images is False
         assert model == svc.text_model
 
-    def test_thread_with_images_uses_vision_model(self, monkeypatch):
+    def test_thread_with_images_still_uses_text_model(self, monkeypatch):
+        """Images are collected but not sent to the LLM — text model is always used."""
         svc = _make_svc()
         monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
-        monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.2-vision:11b"])
+        monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.1:8b"])
 
-        _, model, has_images = svc._generate_summary(
+        _, model = svc._generate_summary(
             _make_req(), _text_messages(), [_image_attachment()],
         )
-        assert has_images is True
-        assert model == svc.vision_model
+        assert model == svc.text_model
 
-    def test_non_image_attachments_do_not_trigger_vision(self, monkeypatch):
+    def test_non_image_attachments_use_text_model(self, monkeypatch):
         svc = _make_svc()
         monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
 
-        _, model, has_images = svc._generate_summary(
+        _, model = svc._generate_summary(
             _make_req(), _text_messages(), [_text_attachment()],
         )
-        assert has_images is False
         assert model == svc.text_model
 
-    def test_vision_model_not_installed_falls_back_to_text(self, monkeypatch):
-        """When vision model is missing, fall back to text model and skip images."""
+    def test_model_override_not_installed_falls_back_to_text(self, monkeypatch):
+        """When override model is missing, fall back to default text model."""
         svc = _make_svc()
         monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
         monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b"])
 
-        _, model, has_images = svc._generate_summary(
-            _make_req(), _text_messages(), [_image_attachment()],
+        _, model = svc._generate_summary(
+            _make_req(model_override="nonexistent:7b"), _text_messages(), [],
         )
-        assert has_images is False
         assert model == svc.text_model
 
 
@@ -180,10 +173,10 @@ class TestOllamaChatPayload:
         assert payload["model"] == "qwen2.5:7b"
         assert payload["stream"] is False
         assert payload["options"]["temperature"] == 0.2
-        assert payload["options"]["num_ctx"] == 32768
+        assert payload["options"]["num_ctx"] == settings.ollama_num_ctx
         assert payload["messages"][0]["role"] == "system"
         assert payload["messages"][1]["role"] == "user"
-        assert captured["timeout"] == 240
+        assert captured["timeout"] == 600
         assert result == "ok"
 
     def test_payload_includes_images_when_present(self, monkeypatch):
@@ -202,7 +195,7 @@ class TestOllamaChatPayload:
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "describe", "images": ["aGVsbG8="]},
         ]
-        svc._ollama_chat(chat_msgs, "llama3.2-vision:11b")
+        svc._ollama_chat(chat_msgs, "llama3.1:8b")
 
         sent_msgs = captured["json"]["messages"]
         assert "images" in sent_msgs[1]
@@ -212,9 +205,10 @@ class TestOllamaChatPayload:
 # ── 4. Image handling ────────────────────────────────────────────────────────
 
 class TestImageHandling:
-    """Raw base64, no data: prefix, capped at MAX_IMAGES=4."""
+    """Images are no longer sent to the LLM — verify no images key in chat."""
 
-    def test_images_are_raw_base64_no_prefix(self, monkeypatch):
+    def test_no_images_key_in_generated_summary(self, monkeypatch):
+        """_generate_summary should never include images in the chat payload."""
         svc = _make_svc()
         captured_msgs = []
 
@@ -228,26 +222,7 @@ class TestImageHandling:
         svc._generate_summary(_make_req(), _text_messages(), attachments)
 
         user_msg = next(m for m in captured_msgs if m["role"] == "user")
-        for img_b64 in user_msg.get("images", []):
-            assert not img_b64.startswith("data:")
-            assert "base64," not in img_b64
-
-    def test_cap_images_at_four(self, monkeypatch):
-        svc = _make_svc()
-        captured_msgs = []
-
-        def spy_chat(msgs, model):
-            captured_msgs.extend(msgs)
-            return "## The Issue\nDone"
-
-        monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
-        monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.2-vision:11b"])
-
-        attachments = [_image_attachment(f"img{i}.png", b64=f"b64data{i}") for i in range(6)]
-        svc._generate_summary(_make_req(), _text_messages(), attachments)
-
-        user_msg = next(m for m in captured_msgs if m["role"] == "user")
-        assert len(user_msg["images"]) == 4
+        assert "images" not in user_msg
 
     def test_no_images_key_when_text_only(self, monkeypatch):
         svc = _make_svc()
@@ -307,40 +282,37 @@ class TestLLMStatus:
 
         status = svc.llm_status()
         assert status.status == "offline"
-        assert status.vision_ready is False
         assert status.text_ready is False
         assert status.fix is not None
 
-    def test_online_both_models_ready(self, monkeypatch):
+    def test_online_text_model_ready(self, monkeypatch):
         svc = _make_svc()
         monkeypatch.setattr(svc, "_ollama_ping", lambda: True)
         monkeypatch.setattr(svc, "_ollama_models", lambda: [
-            "llama3.2-vision:11b", "qwen2.5:7b",
+            "qwen2.5:7b", "llama3.1:8b",
         ])
 
         status = svc.llm_status()
         assert status.status == "online"
-        assert status.vision_ready is True
         assert status.text_ready is True
         assert status.fix is None
 
-    def test_online_only_text_model_ready(self, monkeypatch):
+    def test_online_text_model_not_ready(self, monkeypatch):
         svc = _make_svc()
         monkeypatch.setattr(svc, "_ollama_ping", lambda: True)
-        monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b"])
+        monkeypatch.setattr(svc, "_ollama_models", lambda: ["other-model:latest"])
 
         status = svc.llm_status()
         assert status.status == "online"
-        assert status.vision_ready is False
-        assert status.text_ready is True
+        assert status.text_ready is False
 
     def test_status_reports_installed_models(self, monkeypatch):
         svc = _make_svc()
         monkeypatch.setattr(svc, "_ollama_ping", lambda: True)
-        monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.2-vision:11b"])
+        monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.1:8b"])
 
         status = svc.llm_status()
-        assert set(status.installed) == {"qwen2.5:7b", "llama3.2-vision:11b"}
+        assert set(status.installed) == {"qwen2.5:7b", "llama3.1:8b"}
 
 
 # ── 7. Ping / models helpers ────────────────────────────────────────────────
@@ -371,13 +343,13 @@ class TestOllamaHelpers:
             resp.status_code = 200
             resp.json.return_value = {"models": [
                 {"name": "qwen2.5:7b"},
-                {"name": "llama3.2-vision:11b"},
+                {"name": "llama3.1:8b"},
             ]}
             resp.raise_for_status = MagicMock()
             return resp
 
         monkeypatch.setattr(requests, "get", tags_get)
-        assert svc._ollama_models() == ["qwen2.5:7b", "llama3.2-vision:11b"]
+        assert svc._ollama_models() == ["qwen2.5:7b", "llama3.1:8b"]
 
     def test_ollama_models_returns_empty_on_failure(self, monkeypatch):
         svc = _make_svc()

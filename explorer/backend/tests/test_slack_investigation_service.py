@@ -8,13 +8,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 from schemas.slack_investigation import (
-    SlackThreadAttachment,
     SlackThreadInvestigationRequest,
     SlackThreadMessage,
 )
 from services.ai.slack_investigation_service import (
     SlackInvestigationService,
+    _as_bullets,
     _extract_log_blocks,
+    _find_section,
+    _split_markdown_sections,
     parse_slack_thread_url,
 )
 
@@ -41,7 +43,7 @@ def test_extract_log_blocks_from_triple_and_inline() -> None:
     assert "ERROR stack trace" in blocks[0]
 
 
-def test_generate_summary_selects_vision_model_when_images_present(monkeypatch) -> None:
+def test_generate_summary_selects_text_model(monkeypatch) -> None:
     svc = SlackInvestigationService()
 
     req = SlackThreadInvestigationRequest(
@@ -57,21 +59,12 @@ def test_generate_summary_selects_vision_model_when_images_present(monkeypatch) 
             text="Robot fault observed",
         )
     ]
-    attachments = [
-        SlackThreadAttachment(
-            filename="fault.png",
-            filetype="image",
-            extracted="[Image: fault.png]",
-            b64_image="ZmFrZQ==",
-        )
-    ]
 
     monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model: "## The Issue\nX")
-    monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.2-vision:11b"])
+    monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.1:8b"])
 
-    _summary, model, has_images = svc._generate_summary(req, messages, attachments)
-    assert has_images is True
-    assert model == svc.vision_model
+    _summary, model = svc._generate_summary(req, messages, [])
+    assert model == svc.text_model
 
 
 def test_slack_headers_accepts_alias_token(monkeypatch) -> None:
@@ -240,3 +233,269 @@ def test_fetch_thread_messages_raises_for_invalid_auth(monkeypatch) -> None:
     ref = ParsedSlackThreadRef(workspace="example", channel_id="C123", thread_ts="1.0")
     with pytest.raises(RuntimeError, match="Invalid Slack token"):
         svc._fetch_thread_messages(ref, include_bots=False, max_messages=50)
+
+# ── llm_status installed field ─────────────────────────────────────────────────
+
+def test_llm_status_returns_installed_models(monkeypatch) -> None:
+    """llm_status() should list all installed models."""
+    svc = SlackInvestigationService()
+
+    monkeypatch.setattr(
+        svc,
+        "_ollama_models",
+        lambda: ["qwen2.5:7b", "llama3.1:8b"],
+    )
+
+    status = svc.llm_status()
+
+    assert set(status.installed) == {"qwen2.5:7b", "llama3.1:8b"}
+    assert status.text_ready is True
+
+
+def test_llm_status_text_not_ready_when_missing(monkeypatch) -> None:
+    svc = SlackInvestigationService()
+
+    monkeypatch.setattr(svc, "_ollama_models", lambda: ["other-model:latest"])
+
+    status = svc.llm_status()
+
+    assert status.text_ready is False
+
+
+# ── _generate_summary with model_override ─────────────────────────────────────
+
+def test_generate_summary_model_override(monkeypatch) -> None:
+    """When model_override is set, it should be used instead of the default."""
+    svc = SlackInvestigationService()
+
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Arm collision near shelf",
+        max_messages=200,
+        model_override="llama3.1:8b",
+    )
+    messages = [
+        SlackThreadMessage(
+            ts="1772691175.223000",
+            datetime="2026-03-13 10:00 UTC",
+            user="alice",
+            text="Collision detected",
+        )
+    ]
+
+    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model: "## Summary\nOK")
+    monkeypatch.setattr(svc, "_ollama_models", lambda: ["llama3.1:8b"])
+
+    _summary, model_used = svc._generate_summary(req, messages, [])
+
+    assert model_used == "llama3.1:8b"
+
+
+def test_generate_summary_fallback_when_override_missing(monkeypatch) -> None:
+    """When model_override is not installed, fall back to default text model."""
+    svc = SlackInvestigationService()
+
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Arm collision near shelf",
+        max_messages=200,
+        model_override="nonexistent:7b",
+    )
+    messages = [
+        SlackThreadMessage(
+            ts="1772691175.223000",
+            datetime="2026-03-13 10:00 UTC",
+            user="alice",
+            text="Collision detected",
+        )
+    ]
+
+    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model: "## Summary\nOK")
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    _summary, model_used = svc._generate_summary(req, messages, [])
+
+    assert model_used == svc.text_model
+
+
+# ── System prompt instructs point-wise output ──────────────────────────────────
+
+def test_system_prompt_requires_bullet_points(monkeypatch) -> None:
+    """The system prompt must instruct the LLM to produce bullet-point output."""
+    svc = SlackInvestigationService()
+    captured: dict = {}
+
+    def spy_chat(msgs, model):
+        captured["messages"] = msgs
+        return "## The Issue\n- Robot stopped"
+
+    monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Test bullet prompt",
+        max_messages=200,
+    )
+    msgs = [SlackThreadMessage(ts="1.0", datetime="2026-03-13 10:00 UTC", user="a", text="hi")]
+    svc._generate_summary(req, msgs, [])
+
+    system_content = captured["messages"][0]["content"]
+    assert "bullet" in system_content.lower()
+    assert "## The Issue" in system_content
+    assert "## Timeline of Key Events" in system_content
+    assert "## Important Logs & Errors" in system_content
+    assert "## Root Cause" in system_content
+    assert "## Actions Taken" in system_content
+    assert "## Resolution & Current Status" in system_content
+    assert "## Recommended Next Steps" in system_content
+
+
+def test_system_prompt_says_description_is_context_only(monkeypatch) -> None:
+    """The prompt must tell the LLM to use description as context, not repeat it."""
+    svc = SlackInvestigationService()
+    captured: dict = {}
+
+    def spy_chat(msgs, model):
+        captured["messages"] = msgs
+        return "## The Issue\n- OK"
+
+    monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Test description context only",
+        max_messages=200,
+    )
+    msgs = [SlackThreadMessage(ts="1.0", datetime="2026-03-13 10:00 UTC", user="a", text="msg")]
+    svc._generate_summary(req, msgs, [])
+
+    user_content = captured["messages"][1]["content"]
+    assert "reference only" in user_content.lower()
+    assert "Test description context only" in user_content
+
+
+# ── Full log blocks and attachments included ────────────────────────────────
+
+def test_log_blocks_included_in_prompt(monkeypatch) -> None:
+    """Log blocks should be included in the prompt up to 2000 chars."""
+    svc = SlackInvestigationService()
+    captured: dict = {}
+
+    def spy_chat(msgs, model):
+        captured["messages"] = msgs
+        return "## The Issue\n- error"
+
+    monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    long_log = "ERROR: nav2_controller crashed at line " + "x" * 1500
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Test log inclusion",
+        max_messages=200,
+    )
+    msgs = [SlackThreadMessage(
+        ts="1.0", datetime="2026-03-13 10:00 UTC", user="a",
+        text="Check logs", log_blocks=[long_log],
+    )]
+    svc._generate_summary(req, msgs, [])
+
+    user_content = captured["messages"][1]["content"]
+    # Should include the log block content (not just 800 chars)
+    assert "ERROR: nav2_controller crashed" in user_content
+    assert len(long_log[:2000]) <= 2000
+
+
+def test_attachment_text_included_in_prompt(monkeypatch) -> None:
+    """Non-image attachment text should be included inline in the prompt."""
+    from schemas.slack_investigation import SlackThreadAttachment
+
+    svc = SlackInvestigationService()
+    captured: dict = {}
+
+    def spy_chat(msgs, model):
+        captured["messages"] = msgs
+        return "## The Issue\n- log issue"
+
+    monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Test attachment inclusion",
+        max_messages=200,
+    )
+    att = SlackThreadAttachment(
+        filename="robot.log", filetype="log",
+        extracted="[ERROR] nav2 crashed\n[WARN] map drift detected",
+    )
+    msgs = [SlackThreadMessage(
+        ts="1.0", datetime="2026-03-13 10:00 UTC", user="a",
+        text="Attached log", attachments=[att],
+    )]
+    svc._generate_summary(req, msgs, [att])
+
+    user_content = captured["messages"][1]["content"]
+    assert "[ERROR] nav2 crashed" in user_content
+    assert "map drift detected" in user_content
+
+
+# ── Section parsing for new format ─────────────────────────────────────────────
+
+def test_split_markdown_sections_parses_new_headings() -> None:
+    """_split_markdown_sections should parse the new section headings."""
+    md = (
+        "## The Issue\n"
+        "- Robot stopped near dock\n"
+        "- Nav2 controller crashed\n\n"
+        "## Timeline of Key Events\n"
+        "- [10:00 UTC] Alert triggered\n"
+        "- [10:05 UTC] Engineer investigated\n\n"
+        "## Important Logs & Errors\n"
+        "- ERROR: nav2_controller segfault\n\n"
+        "## Root Cause\n"
+        "- Likely map drift\n\n"
+        "## Actions Taken\n"
+        "- Restarted nav2 service\n\n"
+        "## Resolution & Current Status\n"
+        "- Robot resumed operation\n\n"
+        "## Recommended Next Steps\n"
+        "- Run map alignment checks\n"
+    )
+    sections = _split_markdown_sections(md)
+    assert "the issue" in sections
+    assert "timeline of key events" in sections
+    assert "important logs & errors" in sections
+    assert "root cause" in sections
+    assert "actions taken" in sections
+    assert "resolution & current status" in sections
+    assert "recommended next steps" in sections
+
+
+def test_find_section_matches_new_section_names() -> None:
+    """_find_section should find sections by the new naming convention."""
+    sections = {
+        "the issue": "- Robot stopped",
+        "timeline of key events": "- [10:00] Alert",
+        "important logs & errors": "- ERROR: crash",
+        "root cause": "- Map drift",
+        "actions taken": "- Restarted",
+        "resolution & current status": "- Resolved",
+        "recommended next steps": "- Run checks",
+    }
+    assert _find_section(sections, "the issue") == "- Robot stopped"
+    assert _find_section(sections, "timeline of key events", "timeline") == "- [10:00] Alert"
+    assert _find_section(sections, "important logs & errors", "important logs") == "- ERROR: crash"
+    assert _find_section(sections, "actions taken") == "- Restarted"
+    assert _find_section(sections, "resolution & current status", "resolution") == "- Resolved"
+    assert _find_section(sections, "recommended next steps", "next steps") == "- Run checks"
+
+
+def test_as_bullets_extracts_bullet_lines() -> None:
+    text = "- Robot stopped near dock\n- Nav2 crashed\n- Map drift suspected"
+    result = _as_bullets(text)
+    assert len(result) == 3
+    assert "Robot stopped near dock" in result[0]
+    assert "Nav2 crashed" in result[1]

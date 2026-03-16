@@ -3,17 +3,22 @@ app/routes/sitemap.py
 ─────────────────────
 Interactive site map endpoints.
 Serves sootballs_sites data: map images, spots, racks, regions,
-robot lists, and bag file listings.
+robot lists, and ROS bag upload for the sitemap page.
 """
 from __future__ import annotations
 
-from typing import Optional
+import os
+import pathlib
+import re
+import uuid
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from core.config import settings
 from core.logging import get_logger
+from services.ros.log_extractor import ROSLogExtractor
 from services.sitemap.git_manager import GitRepoManager
 from services.sitemap.service import SiteMapService
 
@@ -23,6 +28,10 @@ router = APIRouter(prefix="/api/v1/sitemap", tags=["sitemap"])
 
 _svc: Optional[SiteMapService] = None
 _git_mgr: Optional[GitRepoManager] = None
+
+# ── Bag upload constants ───────────────────────────────────────────────────────
+ALLOWED_BAG_EXTENSIONS = {".bag", ".db3"}
+MAX_BAG_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 
 
 def _get_git() -> GitRepoManager:
@@ -246,4 +255,238 @@ def get_markers(site_id: str):
     Yaw is in radians.
     """
     return _get_svc().get_markers(site_id)
+
+
+# ── Bag upload for sitemap page ────────────────────────────────────────────────
+
+def _save_sitemap_bag(file: UploadFile) -> tuple[str, int]:
+    """Save an uploaded bag file; returns (absolute path, byte count)."""
+    upload_dir = pathlib.Path(settings.bag_upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    original = pathlib.Path(file.filename or "upload.bag")
+    suffix = original.suffix.lower()
+    if suffix not in ALLOWED_BAG_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type: {suffix!r}. Use .bag or .db3")
+
+    safe_stem = re.sub(r"[^\w.\-]+", "_", original.stem).strip("_")[:80] or "upload"
+    dest = upload_dir / f"{safe_stem}{suffix}"
+    if dest.exists():
+        dest = upload_dir / f"{safe_stem}_{uuid.uuid4().hex[:8]}{suffix}"
+
+    content = file.file.read()
+    if len(content) > MAX_BAG_UPLOAD_BYTES:
+        raise HTTPException(413, "File exceeds 500 MB limit.")
+    with open(dest, "wb") as fh:
+        fh.write(content)
+
+    logger.info("Saved sitemap bag: %s (%d bytes)", dest, len(content))
+    return str(dest), len(content)
+
+
+def _detect_site(logs: list[dict]) -> str:
+    """Try to auto-detect site ID from log entries."""
+    try:
+        sites = _get_svc().list_sites()
+    except Exception:
+        return ""
+    site_ids = [s["id"] for s in sites]
+    if not site_ids:
+        return ""
+
+    text_block = " ".join(
+        f"{entry.get('node_name', '')} {entry.get('message', '')}"
+        for entry in logs[:500]
+    ).lower()
+
+    for sid in site_ids:
+        if sid.lower() in text_block:
+            return sid
+    return ""
+
+
+def _get_bag_topics(bag_path: str) -> list[dict]:
+    """Extract topic list with message counts from a bag file."""
+    try:
+        from rosbags.highlevel import AnyReader
+        from pathlib import Path as P
+        topics = []
+        with AnyReader([P(bag_path)]) as reader:
+            for conn in reader.connections:
+                count = sum(
+                    1 for c, _, _ in reader.messages([conn])
+                )
+                topics.append({
+                    "name": conn.topic,
+                    "type": conn.msgtype,
+                    "count": count,
+                })
+        return topics
+    except Exception as exc:
+        logger.warning("_get_bag_topics(%s): %s", bag_path, exc)
+        return []
+
+
+@router.post("/bags/upload")
+async def upload_sitemap_bag(
+    file: UploadFile = File(...),
+    site_id: str = Form(""),
+):
+    """Upload a ROS bag (.bag/.db3) for the sitemap page.
+    Extracts logs, topics, and auto-detected site.
+    """
+    bag_path, nbytes = _save_sitemap_bag(file)
+
+    extractor = ROSLogExtractor(bag_path)
+    try:
+        logs = extractor.extract()
+    except Exception as exc:
+        logger.warning("Log extraction failed for %s: %s", bag_path, exc)
+        logs = []
+
+    duration_secs = 0.0
+    if len(logs) >= 2:
+        duration_secs = logs[-1]["timestamp"] - logs[0]["timestamp"]
+
+    error_count = sum(1 for l in logs if l.get("log_level") in ("ERROR", "FATAL"))
+    warning_count = sum(1 for l in logs if l.get("log_level") == "WARN")
+
+    detected_site = _detect_site(logs)
+    topics = _get_bag_topics(bag_path)
+
+    return {
+        "bag_path": bag_path,
+        "filename": file.filename,
+        "size_mb": round(nbytes / (1024 * 1024), 2),
+        "site_id": site_id,
+        "detected_site": detected_site,
+        "site_mismatch": bool(detected_site and site_id and detected_site != site_id),
+        "duration_secs": round(duration_secs, 3),
+        "total_messages": len(logs),
+        "topics": topics,
+        "topics_count": len(topics),
+        "error_count": error_count,
+        "warning_count": warning_count,
+    }
+
+
+@router.get("/bags/topics/messages")
+def get_topic_messages(
+    bag_path: str = Query(...),
+    topic: str = Query(...),
+    from_ts: Optional[float] = Query(None),
+    to_ts: Optional[float] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """Return the last N messages from a specific topic."""
+    if not os.path.exists(bag_path):
+        raise HTTPException(404, f"Bag not found: {bag_path}")
+
+    try:
+        from rosbags.highlevel import AnyReader
+        from pathlib import Path as P
+        messages = []
+        with AnyReader([P(bag_path)]) as reader:
+            connections = [c for c in reader.connections if c.topic == topic]
+            if not connections:
+                raise HTTPException(404, f"Topic '{topic}' not found in bag")
+            for conn, timestamp_ns, rawdata in reader.messages(connections):
+                ts = timestamp_ns / 1_000_000_000.0
+                if from_ts is not None and ts < from_ts:
+                    continue
+                if to_ts is not None and ts > to_ts:
+                    continue
+                msg = reader.deserialize(rawdata, conn.msgtype)
+                messages.append({
+                    "timestamp": ts,
+                    "type": conn.msgtype,
+                    "data": str(msg)[:2000],
+                })
+                if len(messages) >= limit:
+                    break
+        return {"topic": topic, "messages": messages, "count": len(messages)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("get_topic_messages(%s, %s): %s", bag_path, topic, exc)
+        raise HTTPException(422, f"Could not read topic messages: {exc}")
+
+
+@router.get("/bags/logs")
+def get_bag_logs(
+    bag_path: str = Query(...),
+    level: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    from_ts: Optional[float] = Query(None),
+    to_ts: Optional[float] = Query(None),
+    limit: int = Query(2000, ge=1, le=10000),
+):
+    """Return log entries from a bag, with optional filters."""
+    if not os.path.exists(bag_path):
+        raise HTTPException(404, f"Bag not found: {bag_path}")
+
+    extractor = ROSLogExtractor(bag_path)
+    try:
+        logs = extractor.extract()
+    except Exception as exc:
+        raise HTTPException(422, f"Could not read bag: {exc}")
+
+    if from_ts is not None:
+        logs = [l for l in logs if l["timestamp"] >= from_ts]
+    if to_ts is not None:
+        logs = [l for l in logs if l["timestamp"] <= to_ts]
+    if level:
+        levels = {lv.strip().upper() for lv in level.split(",")}
+        logs = [l for l in logs if l.get("log_level", "") in levels]
+    if search:
+        search_lower = search.lower()
+        logs = [l for l in logs if search_lower in l.get("message", "").lower()
+                or search_lower in l.get("node_name", "").lower()]
+
+    return {
+        "logs": [
+            {
+                "timestamp": l["timestamp"],
+                "datetime": l.get("datetime", ""),
+                "level": l.get("log_level", "INFO"),
+                "node": l.get("node_name", ""),
+                "message": l.get("message", ""),
+            }
+            for l in logs[:limit]
+        ],
+        "total": len(logs),
+    }
+
+
+@router.get("/bags/list")
+def list_bags():
+    """Return all uploaded bag files."""
+    upload_dir = pathlib.Path(settings.bag_upload_dir)
+    if not upload_dir.exists():
+        return []
+    result = []
+    for p in sorted(upload_dir.iterdir()):
+        if p.is_file() and p.suffix.lower() in ALLOWED_BAG_EXTENSIONS:
+            stat = p.stat()
+            result.append({
+                "filename": p.name,
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                "upload_time": stat.st_mtime,
+            })
+    return result
+
+
+@router.delete("/bags/{filename}")
+def delete_bag(filename: str):
+    """Delete a bag file from the upload directory."""
+    safe = pathlib.PurePosixPath(filename).name
+    if safe != filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+    upload_dir = pathlib.Path(settings.bag_upload_dir)
+    target = upload_dir / safe
+    if not target.exists():
+        raise HTTPException(404, f"Bag not found: {filename}")
+    target.unlink()
+    logger.info("Deleted bag: %s", target)
+    return {"deleted": filename}
 

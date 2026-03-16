@@ -56,3 +56,43 @@ class MapDiffResponse(BaseModel):
     iou_score:     float   # 0.0 – 1.0
     diff_image_b64: str    # raw base64 PNG (no data: prefix)
     message:       str = ""
+
+
+# ── Trajectory ─────────────────────────────────────────────────────────────────
+
+class TrajectoryRequest(BaseModel):
+    bag_path:       str
+    site_id:        Optional[str] = None
+    max_points:     int = 4000          # subsample cap
+    topic_override: Optional[str] = None
+    smooth:         bool = True         # apply path smoothing
+
+
+class TrajectoryPoint(BaseModel):
+    x:         float  # world-frame metres
+    y:         float  # world-frame metres
+    yaw:       float  # radians
+    timestamp: float  # Unix time (seconds)
+
+
+class TrajectoryResponse(BaseModel):
+    bag_path:     str
+    site_id:      Optional[str]
+    topic:        str                 # pose topic used
+    total_points: int                 # cleaned count before sub-sampling
+    raw_count:    int = 0             # raw count before outlier removal
+    points:       List[TrajectoryPoint]
+    error:        Optional[str] = None
+    frame_id:     Optional[str] = None  # coordinate frame ("map" or "odom")
+
+
+class BagTopicInfo(BaseModel):
+    topic:   str
+    msgtype: str
+    count:   int
+    is_pose: bool = False
+
+
+class BagTopicsResponse(BaseModel):
+    bag_path: str
+    topics:   List[BagTopicInfo]

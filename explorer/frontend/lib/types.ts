@@ -112,9 +112,7 @@ export interface SlackThreadInvestigationRequest {
 
 export interface SlackLLMStatusResponse {
   status: "online" | "offline";
-  vision_model: string;
   text_model: string;
-  vision_ready: boolean;
   text_ready: boolean;
   installed: string[];
   fix?: string;
@@ -426,3 +424,38 @@ export interface LokiVolumeBucket {
   ts: number;
   count: number;
 }
+
+// ──────────────────────────────────────────────
+// Bag Trajectory
+// ──────────────────────────────────────────────
+export interface TrajectoryPoint {
+  x: number;         // world-frame metres
+  y: number;         // world-frame metres
+  yaw: number;       // radians
+  timestamp: number; // Unix time (seconds)
+}
+
+export interface TrajectoryResponse {
+  bag_path: string;
+  site_id: string | null;
+  topic: string;
+  total_points: number;
+  raw_count: number;
+  points: TrajectoryPoint[];
+  error: string | null;
+  frame_id: string | null;  // "map" or "odom" — odom frame may not align with the map
+}
+
+export interface BagTopicInfo {
+  topic: string;
+  msgtype: string;
+  count: number;
+  is_pose: boolean;
+}
+
+export interface BagTopicsResponse {
+  bag_path: string;
+  topics: BagTopicInfo[];
+}
+
+
