@@ -42,6 +42,7 @@ from app.routes import health, sites, bags, investigation, slack_investigation, 
 from app.routes import sitemap as sitemap_route
 from app.routes import grafana as grafana_route
 from app.routes import logs as logs_route
+from app.routes import ai_config as ai_config_route
 from services.ai.slack_investigation_service import SlackInvestigationService
 
 health.register_singletons(llm_service, matcher, site_manager)
@@ -52,6 +53,7 @@ slack_investigation.register_singletons(llm_service)
 grafana_route.register_singletons()
 analyse.register_singletons(llm_service, SlackInvestigationService(llm_service))
 logs_route.register_singletons(grafana_route._svc)
+ai_config_route.register_singletons(llm_service)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -80,6 +82,7 @@ app.include_router(sitemap_route.router)
 app.include_router(grafana_route.router)
 app.include_router(analyse.router)
 app.include_router(logs_route.router)
+app.include_router(ai_config_route.router)
 
 
 @app.exception_handler(Exception)

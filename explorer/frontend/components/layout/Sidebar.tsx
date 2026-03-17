@@ -12,6 +12,7 @@ import {
   MessagesSquare,
 } from "lucide-react";
 import clsx from "clsx";
+import CostDashboard from "@/components/dashboard/CostDashboard";
 
 const NAV = [
   { href: "/",           label: "Dashboard",     icon: LayoutDashboard },
@@ -57,6 +58,9 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Cost Dashboard */}
+      <CostDashboard />
 
       {/* Footer */}
       <div className="px-4 py-3 border-t border-[#1f2937] text-xs text-slate-600 truncate">

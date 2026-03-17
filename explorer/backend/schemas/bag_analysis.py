@@ -31,6 +31,11 @@ class BagLogAnalysisResponse(BaseModel):
     log_entries:      List[LogEntry]
     engine_hypothesis: str = ""
     llm_summary:      str = ""  # combined LLM analysis markdown
+    # Actual tokens reported back by the LLM API (0 when using Ollama)
+    actual_prompt_tokens:     int = 0
+    actual_completion_tokens: int = 0
+    actual_total_tokens:      int = 0
+    cost_usd:                 float = 0.0
 
 
 class TimelineBucket(BaseModel):

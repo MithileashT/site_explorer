@@ -22,6 +22,8 @@ import type {
   SlackLLMStatusResponse,
   TrajectoryResponse,
   BagTopicsResponse,
+  AIProvidersResponse,
+  AIUsageResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -284,6 +286,29 @@ export async function investigateSlackThread(
 export async function getSlackLLMStatus(): Promise<SlackLLMStatusResponse> {
   const { data } = await http.get<SlackLLMStatusResponse>("/slack/status");
   return data;
+}
+
+// ── AI Provider Configuration ───────────────────────────────────────────────
+
+export async function getAIProviders(): Promise<AIProvidersResponse> {
+  const { data } = await http.get<AIProvidersResponse>("/ai/providers");
+  return data;
+}
+
+export async function setAIProvider(providerId: string): Promise<AIProvidersResponse> {
+  const { data } = await http.post<AIProvidersResponse>("/ai/provider", {
+    provider_id: providerId,
+  });
+  return data;
+}
+
+export async function fetchAIUsage(): Promise<AIUsageResponse> {
+  const { data } = await http.get<AIUsageResponse>("/ai/usage");
+  return data;
+}
+
+export async function resetAIUsage(): Promise<void> {
+  await http.post("/ai/usage/reset");
 }
 
 // ── Grafana ─────────────────────────────────────────────────────────────────

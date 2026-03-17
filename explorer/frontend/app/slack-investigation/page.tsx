@@ -18,11 +18,12 @@ import {
   TerminalSquare,
 } from "lucide-react";
 
-import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus } from "@/lib/api";
+import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus, getAIProviders, setAIProvider } from "@/lib/api";
 import type {
   SlackThreadInvestigationRequest,
   SlackThreadInvestigationResponse,
   SlackLLMStatusResponse,
+  AIProviderInfo,
 } from "@/lib/types";
 
 const headingFont = Space_Grotesk({
@@ -99,6 +100,9 @@ export default function SlackInvestigationPage() {
   const [sitesError, setSitesError] = useState("");
   const [llmStatus, setLlmStatus] = useState<SlackLLMStatusResponse | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  const [providers, setProviders] = useState<AIProviderInfo[]>([]);
+  const [activeProvider, setActiveProvider] = useState<AIProviderInfo | null>(null);
+  const [providerSwitching, setProviderSwitching] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,13 +134,22 @@ export default function SlackInvestigationPage() {
   }, []);
 
   useEffect(() => {
+    // Single consolidated fetch for provider info + LLM status
+    getAIProviders()
+      .then((resp) => {
+        setProviders(resp.providers);
+        setActiveProvider(resp.active);
+        setSelectedModel(resp.active.id);
+      })
+      .catch(() => {});
+
     getSlackLLMStatus()
       .then((s) => {
         setLlmStatus(s);
-        setSelectedModel(s.text_model);
+        // Only use status for LLM readiness info, not provider selection
       })
       .catch(() => {
-        // Non-critical — user can still submit without model selector
+        // If status fails, providers endpoint already handles selection
       });
   }, []);
 
@@ -145,6 +158,17 @@ export default function SlackInvestigationPage() {
     setError("");
     setResult(null);
     try {
+      // If a provider is selected and it differs from active, switch globally first
+      if (selectedModel && activeProvider && selectedModel !== activeProvider.id) {
+        try {
+          const resp = await setAIProvider(selectedModel);
+          setActiveProvider(resp.active);
+          setProviders(resp.providers);
+        } catch {
+          // Non-fatal: proceed with current active provider
+        }
+      }
+
       const payload: SlackThreadInvestigationRequest = {
         ...data,
         site_id: data.site_id?.trim() || undefined,
@@ -285,29 +309,72 @@ export default function SlackInvestigationPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs text-slate-300">LLM Model</label>
+                  <label className="mb-1 block text-xs text-slate-300">AI Provider / Model</label>
                   <div className="relative">
                     <select
                       className="input appearance-none pr-10"
                       value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      disabled={running || !llmStatus}
+                      onChange={async (e) => {
+                        const newId = e.target.value;
+                        setSelectedModel(newId);
+                        // Switch provider globally
+                        if (newId && newId !== activeProvider?.id) {
+                          setProviderSwitching(true);
+                          try {
+                            const resp = await setAIProvider(newId);
+                            setActiveProvider(resp.active);
+                            setProviders(resp.providers);
+                          } catch {
+                            // Revert selection on failure
+                            if (activeProvider) setSelectedModel(activeProvider.id);
+                          } finally {
+                            setProviderSwitching(false);
+                          }
+                        }
+                      }}
+                      disabled={running || providerSwitching || (providers.length === 0 && !llmStatus)}
                     >
-                      {!llmStatus && (
+                      {providers.length === 0 && !llmStatus && (
                         <option value="">Loading models...</option>
                       )}
-                      {llmStatus && llmStatus.installed.length === 0 && (
-                        <option value="">No models installed</option>
+                      {providers.length === 0 && llmStatus && llmStatus.installed.length === 0 && (
+                        <option value="">No models available</option>
                       )}
-                      {llmStatus && llmStatus.installed.length > 0 && (
+                      {providers.length > 0 ? (
                         <>
-                          {llmStatus.installed.map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                              {m === llmStatus.text_model ? " (default)" : ""}
-                            </option>
-                          ))}
+                          {/* Group: Ollama models */}
+                          <optgroup label="Local Models (Ollama)">
+                            {providers
+                              .filter((p) => p.type === "ollama")
+                              .map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name}
+                                  {activeProvider?.id === p.id ? " (active)" : ""}
+                                </option>
+                              ))}
+                          </optgroup>
+                          {/* Group: OpenAI models */}
+                          {providers.some((p) => p.type === "openai") && (
+                            <optgroup label="OpenAI (Custom API Key)">
+                              {providers
+                                .filter((p) => p.type === "openai")
+                                .map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name}
+                                    {activeProvider?.id === p.id ? " (active)" : ""}
+                                  </option>
+                                ))}
+                            </optgroup>
+                          )}
                         </>
+                      ) : (
+                        /* Fallback: show installed Ollama models from status */
+                        llmStatus && llmStatus.installed.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                            {m === llmStatus.text_model ? " (default)" : ""}
+                          </option>
+                        ))
                       )}
                     </select>
                     <ChevronDown
@@ -315,7 +382,16 @@ export default function SlackInvestigationPage() {
                       className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
                     />
                   </div>
-                  {llmStatus && (
+                  {providerSwitching && (
+                    <p className="mt-0.5 text-[10px] text-sky-400">Switching provider...</p>
+                  )}
+                  {!providerSwitching && activeProvider && (
+                    <p className="mt-0.5 text-[10px] text-slate-600">
+                      Active: {activeProvider.name} ({activeProvider.type})
+                      {providers.length > 0 && ` · ${providers.length} available`}
+                    </p>
+                  )}
+                  {!providerSwitching && !activeProvider && llmStatus && (
                     <p className="mt-0.5 text-[10px] text-slate-600">
                       {llmStatus.installed.length} model{llmStatus.installed.length !== 1 ? "s" : ""} installed
                     </p>
@@ -396,6 +472,19 @@ export default function SlackInvestigationPage() {
                         Model: {result.model_used}
                       </span>
                     )}
+                    {(result.actual_total_tokens ?? 0) > 0 && (() => {
+                      const pin  = result.actual_prompt_tokens     ?? 0;
+                      const pout = result.actual_completion_tokens ?? 0;
+                      const cost = result.cost_usd ?? (pin * 2.00 + pout * 8.00) / 1_000_000;
+                      return (
+                        <span
+                          className="rounded-full border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200"
+                          title={`Actual tokens used · in=${pin.toLocaleString()} out=${pout.toLocaleString()} · gpt-4.1: $2/M in, $8/M out`}
+                        >
+                          {pin.toLocaleString()} in | {pout.toLocaleString()} out · ${cost.toFixed(4)}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </section>
 

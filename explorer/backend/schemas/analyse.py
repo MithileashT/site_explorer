@@ -20,6 +20,9 @@ class AnalyseRequest(BaseModel):
     logs: List[LogEntry] = Field(default_factory=list)
     time_from: Optional[str] = None
     time_to: Optional[str] = None
+    # Analysis-specific time range (epoch ms) — filters logs before LLM processing
+    analysis_from_ms: Optional[int] = None
+    analysis_to_ms: Optional[int] = None
     site_id: Optional[str] = None
     env: Optional[str] = None
     hostname: Optional[str] = None
@@ -34,3 +37,11 @@ class AnalyseResponse(BaseModel):
     slack_messages: int = 0
     log_count: int = 0
     summary: str
+    partial_analysis: bool = False
+    chunks_analysed: int = 1
+    estimated_tokens: int = 0  # estimated prompt tokens sent to LLM
+    # Actual tokens reported back by the LLM API (0 when using Ollama)
+    actual_prompt_tokens:     int = 0
+    actual_completion_tokens: int = 0
+    actual_total_tokens:      int = 0
+    cost_usd:                 float = 0.0

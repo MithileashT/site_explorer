@@ -29,6 +29,10 @@ export interface BagLogAnalysisResponse {
   engine_hypothesis: string;
   llm_summary: string;
   log_entries: LogEntry[];
+  actual_prompt_tokens?: number;
+  actual_completion_tokens?: number;
+  actual_total_tokens?: number;
+  cost_usd?: number;
 }
 
 export interface TimelineBucket {
@@ -116,6 +120,43 @@ export interface SlackLLMStatusResponse {
   text_ready: boolean;
   installed: string[];
   fix?: string;
+  providers?: AIProviderInfo[];
+  active_provider?: AIProviderInfo;
+}
+
+// ──────────────────────────────────────────────
+// AI Provider Configuration
+// ──────────────────────────────────────────────
+export interface AIProviderInfo {
+  id: string;
+  name: string;
+  type: "ollama" | "openai";
+}
+
+export interface AIProvidersResponse {
+  providers: AIProviderInfo[];
+  active: AIProviderInfo;
+}
+
+// ──────────────────────────────────────────────
+// AI Usage / Cost Dashboard
+// ──────────────────────────────────────────────
+export interface ModuleUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  request_count: number;
+}
+
+export interface AIUsageResponse {
+  session_start: number;
+  uptime_seconds: number;
+  active_model: string;
+  active_provider: string;
+  modules: Record<string, ModuleUsage>;
+  totals: ModuleUsage;
+  pricing: Record<string, { input: number; output: number }>;
 }
 
 export interface SlackThreadInvestigationResponse {
@@ -132,6 +173,10 @@ export interface SlackThreadInvestigationResponse {
   model_used?: string;
   timeline: SlackThreadMessage[];
   raw_analysis: string;
+  actual_prompt_tokens?: number;
+  actual_completion_tokens?: number;
+  actual_total_tokens?: number;
+  cost_usd?: number;
 }
 
 // ──────────────────────────────────────────────
@@ -393,6 +438,8 @@ export interface AnalyseRequest {
   deployment?: string;
   slack_thread_url?: string;
   issue_description: string;
+  analysis_from_ms?: number;
+  analysis_to_ms?: number;
 }
 
 export interface AnalyseResponse {
@@ -401,6 +448,13 @@ export interface AnalyseResponse {
   slack_messages: number;
   log_count: number;
   summary: string;
+  partial_analysis?: boolean;
+  chunks_analysed?: number;
+  estimated_tokens?: number;
+  actual_prompt_tokens?: number;
+  actual_completion_tokens?: number;
+  actual_total_tokens?: number;
+  cost_usd?: number;
 }
 
 // ──────────────────────────────────────────────

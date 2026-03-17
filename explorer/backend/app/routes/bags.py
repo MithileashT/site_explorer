@@ -188,6 +188,7 @@ def analyze_bag_logs(req: BagLogAnalysisRequest):
             logger.error("LLM analysis failed: %s", e)
 
     # ── 5. Build response ─────────────────────────────────────────────────────
+    usage = getattr(_llm_service, "last_usage", {})
     return BagLogAnalysisResponse(
         status            = "ok",
         bag_path          = req.bag_path,
@@ -198,6 +199,10 @@ def analyze_bag_logs(req: BagLogAnalysisRequest):
         log_entries       = [_map_log(l) for l in filtered[:MAX_LOG_ENTRIES]],
         engine_hypothesis = engine_hypothesis,
         llm_summary       = llm_summary,
+        actual_prompt_tokens     = usage.get("prompt_tokens", 0),
+        actual_completion_tokens = usage.get("completion_tokens", 0),
+        actual_total_tokens      = usage.get("total_tokens", 0),
+        cost_usd                 = usage.get("cost_usd", 0.0),
     )
 
 

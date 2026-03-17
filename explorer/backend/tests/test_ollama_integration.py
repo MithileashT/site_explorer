@@ -104,7 +104,7 @@ class TestModelSelection:
 
     def test_text_only_thread_uses_text_model(self, monkeypatch):
         svc = _make_svc()
-        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
+        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model, **kw: "## The Issue\nSummary")
 
         _, model = svc._generate_summary(
             _make_req(), _text_messages(), [],
@@ -114,7 +114,7 @@ class TestModelSelection:
     def test_thread_with_images_still_uses_text_model(self, monkeypatch):
         """Images are collected but not sent to the LLM — text model is always used."""
         svc = _make_svc()
-        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
+        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model, **kw: "## The Issue\nSummary")
         monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.1:8b"])
 
         _, model = svc._generate_summary(
@@ -124,7 +124,7 @@ class TestModelSelection:
 
     def test_non_image_attachments_use_text_model(self, monkeypatch):
         svc = _make_svc()
-        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
+        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model, **kw: "## The Issue\nSummary")
 
         _, model = svc._generate_summary(
             _make_req(), _text_messages(), [_text_attachment()],
@@ -134,8 +134,8 @@ class TestModelSelection:
     def test_model_override_not_installed_falls_back_to_text(self, monkeypatch):
         """When override model is missing, fall back to default text model."""
         svc = _make_svc()
-        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model: "## The Issue\nSummary")
-        monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b"])
+        monkeypatch.setattr(svc, "_ollama_chat", lambda msgs, model, **kw: "## The Issue\nSummary")
+        monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
 
         _, model = svc._generate_summary(
             _make_req(model_override="nonexistent:7b"), _text_messages(), [],
@@ -176,7 +176,7 @@ class TestOllamaChatPayload:
         assert payload["options"]["num_ctx"] == settings.ollama_num_ctx
         assert payload["messages"][0]["role"] == "system"
         assert payload["messages"][1]["role"] == "user"
-        assert captured["timeout"] == 600
+        assert captured["timeout"] == 180
         assert result == "ok"
 
     def test_payload_includes_images_when_present(self, monkeypatch):
@@ -212,7 +212,7 @@ class TestImageHandling:
         svc = _make_svc()
         captured_msgs = []
 
-        def spy_chat(msgs, model):
+        def spy_chat(msgs, model, **kw):
             captured_msgs.extend(msgs)
             return "## The Issue\nDone"
 
@@ -228,7 +228,7 @@ class TestImageHandling:
         svc = _make_svc()
         captured_msgs = []
 
-        def spy_chat(msgs, model):
+        def spy_chat(msgs, model, **kw):
             captured_msgs.extend(msgs)
             return "## The Issue\nDone"
 

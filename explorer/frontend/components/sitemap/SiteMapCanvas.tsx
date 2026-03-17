@@ -894,34 +894,46 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
       const total = pts.length;
 
       if (total >= 2) {
-        // Build a cyan→lime gradient along the path length for the stroke
+        // Build a vibrant neon gradient along the path for high visibility
         const startPt = pts[0].px;
         const endPt   = pts[total - 1].px;
         const lineGrad = ctx.createLinearGradient(
           startPt[0], startPt[1], endPt[0], endPt[1]
         );
-        lineGrad.addColorStop(0,   "rgba(6, 182, 212, 0.85)");   // cyan-500
-        lineGrad.addColorStop(0.5, "rgba(99, 102, 241, 0.75)");  // indigo-500
-        lineGrad.addColorStop(1,   "rgba(34, 197, 94, 0.85)");   // green-500
+        lineGrad.addColorStop(0,    "#00FFFF");  // bright cyan
+        lineGrad.addColorStop(0.35, "#FF00FF");  // magenta
+        lineGrad.addColorStop(0.65, "#FFD700");  // gold
+        lineGrad.addColorStop(1,    "#00FF88");  // neon green
 
-        // Draw the main path line
+        // Outer glow pass — wide soft colored halo
+        ctx.beginPath();
+        pts.forEach(({ px: [px, py] }, i) => {
+          if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
+        });
+        ctx.strokeStyle = "rgba(0, 255, 255, 0.25)";
+        ctx.lineWidth   = Math.max(6, 12 / scale);
+        ctx.lineJoin    = "round";
+        ctx.lineCap     = "round";
+        ctx.stroke();
+
+        // Draw the main path line — thick and fully opaque
         ctx.beginPath();
         pts.forEach(({ px: [px, py] }, i) => {
           if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
         });
         ctx.strokeStyle = lineGrad;
-        ctx.lineWidth   = Math.max(1.2, 2.5 / scale);
+        ctx.lineWidth   = Math.max(2.5, 4.5 / scale);
         ctx.lineJoin    = "round";
         ctx.lineCap     = "round";
         ctx.stroke();
 
-        // Thin white glow pass for depth
+        // Inner bright white core for pop
         ctx.beginPath();
         pts.forEach(({ px: [px, py] }, i) => {
           if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
         });
-        ctx.strokeStyle = "rgba(255,255,255,0.08)";
-        ctx.lineWidth   = Math.max(2.5, 5 / scale);
+        ctx.strokeStyle = "rgba(255,255,255,0.30)";
+        ctx.lineWidth   = Math.max(1, 1.5 / scale);
         ctx.lineJoin    = "round";
         ctx.lineCap     = "round";
         ctx.stroke();
@@ -943,7 +955,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
           ctx.lineTo(-arrowLen * 0.2,  arrowHW);
           ctx.lineTo(-arrowLen * 0.2, -arrowHW);
           ctx.closePath();
-          ctx.fillStyle = "rgba(6, 182, 212, 0.70)";
+          ctx.fillStyle = "#00FFFF";
           ctx.fill();
           ctx.restore();
         }

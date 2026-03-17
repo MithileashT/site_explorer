@@ -60,7 +60,7 @@ def test_generate_summary_selects_text_model(monkeypatch) -> None:
         )
     ]
 
-    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model: "## The Issue\nX")
+    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model, **kw: "## The Issue\nX")
     monkeypatch.setattr(svc, "_ollama_models", lambda: ["qwen2.5:7b", "llama3.1:8b"])
 
     _summary, model = svc._generate_summary(req, messages, [])
@@ -283,7 +283,7 @@ def test_generate_summary_model_override(monkeypatch) -> None:
         )
     ]
 
-    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model: "## Summary\nOK")
+    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model, **kw: "## Summary\nOK")
     monkeypatch.setattr(svc, "_ollama_models", lambda: ["llama3.1:8b"])
 
     _summary, model_used = svc._generate_summary(req, messages, [])
@@ -310,7 +310,7 @@ def test_generate_summary_fallback_when_override_missing(monkeypatch) -> None:
         )
     ]
 
-    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model: "## Summary\nOK")
+    monkeypatch.setattr(svc, "_ollama_chat", lambda _messages, _model, **kw: "## Summary\nOK")
     monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
 
     _summary, model_used = svc._generate_summary(req, messages, [])
@@ -325,9 +325,9 @@ def test_system_prompt_requires_bullet_points(monkeypatch) -> None:
     svc = SlackInvestigationService()
     captured: dict = {}
 
-    def spy_chat(msgs, model):
+    def spy_chat(msgs, model, **kw):
         captured["messages"] = msgs
-        return "## The Issue\n- Robot stopped"
+        return "## Issue Overview\n- Robot stopped"
 
     monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
     monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
@@ -342,23 +342,21 @@ def test_system_prompt_requires_bullet_points(monkeypatch) -> None:
 
     system_content = captured["messages"][0]["content"]
     assert "bullet" in system_content.lower()
-    assert "## The Issue" in system_content
-    assert "## Timeline of Key Events" in system_content
-    assert "## Important Logs & Errors" in system_content
-    assert "## Root Cause" in system_content
-    assert "## Actions Taken" in system_content
-    assert "## Resolution & Current Status" in system_content
-    assert "## Recommended Next Steps" in system_content
+    assert "## Issue Overview" in system_content
+    assert "## Key Observations" in system_content
+    assert "## Root Cause Analysis" in system_content
+    assert "## Actions Taken / Suggested Fixes" in system_content
+    assert "## Current Status / Risks" in system_content
 
 
 def test_system_prompt_says_description_is_context_only(monkeypatch) -> None:
-    """The prompt must tell the LLM to use description as context, not repeat it."""
+    """The prompt must include the issue description prominently for context-aware summarization."""
     svc = SlackInvestigationService()
     captured: dict = {}
 
-    def spy_chat(msgs, model):
+    def spy_chat(msgs, model, **kw):
         captured["messages"] = msgs
-        return "## The Issue\n- OK"
+        return "## Issue Overview\n- OK"
 
     monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
     monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
@@ -372,7 +370,7 @@ def test_system_prompt_says_description_is_context_only(monkeypatch) -> None:
     svc._generate_summary(req, msgs, [])
 
     user_content = captured["messages"][1]["content"]
-    assert "reference only" in user_content.lower()
+    assert "issue name" in user_content.lower() or "description" in user_content.lower()
     assert "Test description context only" in user_content
 
 
@@ -383,7 +381,7 @@ def test_log_blocks_included_in_prompt(monkeypatch) -> None:
     svc = SlackInvestigationService()
     captured: dict = {}
 
-    def spy_chat(msgs, model):
+    def spy_chat(msgs, model, **kw):
         captured["messages"] = msgs
         return "## The Issue\n- error"
 
@@ -415,7 +413,7 @@ def test_attachment_text_included_in_prompt(monkeypatch) -> None:
     svc = SlackInvestigationService()
     captured: dict = {}
 
-    def spy_chat(msgs, model):
+    def spy_chat(msgs, model, **kw):
         captured["messages"] = msgs
         return "## The Issue\n- log issue"
 

@@ -207,14 +207,30 @@ export default function BagsPage() {
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Bot size={13} className="text-blue-400" /> AI Analysis
               </h3>
-              {analysis.llm_summary && (
-                <button
-                  onClick={() => setShowRawLLM((p) => !p)}
-                  className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-                >
-                  {showRawLLM ? "Formatted" : "Raw"}
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {(analysis.actual_total_tokens ?? 0) > 0 && (() => {
+                  const pin  = analysis.actual_prompt_tokens     ?? 0;
+                  const pout = analysis.actual_completion_tokens ?? 0;
+                  const cost = analysis.cost_usd ?? (pin * 2.00 + pout * 8.00) / 1_000_000;
+                  return (
+                    <span
+                      className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400"
+                      title={`Actual tokens · in=${pin.toLocaleString()} out=${pout.toLocaleString()} · gpt-4.1: $2/M in, $8/M out`}
+                    >
+                      {pin.toLocaleString()} in | {pout.toLocaleString()} out
+                      {" · "}<span className="text-emerald-400">${cost.toFixed(4)}</span>
+                    </span>
+                  );
+                })()}
+                {analysis.llm_summary && (
+                  <button
+                    onClick={() => setShowRawLLM((p) => !p)}
+                    className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    {showRawLLM ? "Formatted" : "Raw"}
+                  </button>
+                )}
+              </div>
             </div>
             {analysis.llm_summary ? (
               showRawLLM ? (

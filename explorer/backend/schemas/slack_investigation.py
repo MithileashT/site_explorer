@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -41,6 +41,8 @@ class SlackLLMStatusResponse(BaseModel):
     text_ready: bool
     installed: List[str]
     fix: Optional[str] = None
+    providers: List[Dict[str, Any]] = []
+    active_provider: Optional[Dict[str, Any]] = None
 
 
 class SlackThreadInvestigationResponse(BaseModel):
@@ -59,3 +61,8 @@ class SlackThreadInvestigationResponse(BaseModel):
     timeline: List[SlackThreadMessage] = []
     attachments: List[SlackThreadAttachment] = []
     raw_analysis: str = ""
+    # Actual tokens reported back by the LLM API (0 when using Ollama)
+    actual_prompt_tokens:     int = 0
+    actual_completion_tokens: int = 0
+    actual_total_tokens:      int = 0
+    cost_usd:                 float = 0.0

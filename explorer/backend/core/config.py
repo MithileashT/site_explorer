@@ -17,6 +17,18 @@ def _clean_env_value(value: str | None) -> str:
     return value.strip().strip('"').strip("'").strip()
 
 
+def _resolve_from_dotenv(key: str, default: str = "") -> str:
+    """Return env-var value, falling back to the .env file when empty."""
+    value = _clean_env_value(os.getenv(key))
+    if value:
+        return value
+    try:
+        dotenv_map = dotenv_values(_ENV_PATH)
+    except Exception:
+        return default
+    return _clean_env_value(dotenv_map.get(key)) or default
+
+
 def resolve_slack_bot_token() -> str:
     """Return the first configured Slack token from env vars or backend .env."""
     for key in _SLACK_TOKEN_ENV_KEYS:
@@ -40,7 +52,8 @@ class _Settings:
     # ── LLM (Ollama / OpenAI-compatible) ────────────────────────────────────
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     ollama_model:    str = os.getenv("OLLAMA_MODEL",    "qwen2.5-coder")
-    openai_api_key:  str = os.getenv("OPENAI_API_KEY",  "")
+    openai_api_key:  str = _resolve_from_dotenv("OPENAI_API_KEY")
+    openai_model:    str = _resolve_from_dotenv("OPENAI_MODEL", "gpt-4.1")
     ollama_host:     str = os.getenv(
         "OLLAMA_HOST",
         os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").removesuffix("/v1"),
@@ -48,8 +61,8 @@ class _Settings:
     ollama_text_model: str = os.getenv("OLLAMA_TEXT_MODEL", "qwen2.5:7b")
     ollama_vision_model: str = os.getenv("OLLAMA_VISION_MODEL", "llava:7b")
     # Context window for Ollama inference.
-    # 4096 is safe for CPU-only deployments; increase for GPU setups.
-    ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+    # 8192 balances quality with speed; increase for GPU setups.
+    ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
 
     # ── Server ───────────────────────────────────────────────────────────────
     host:      str = os.getenv("HOST",      "0.0.0.0")

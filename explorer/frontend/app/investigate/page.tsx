@@ -377,6 +377,11 @@ export default function LogViewerPage() {
   const [analysing, setAnalysing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalyseResponse | null>(null);
   const [analysisError, setAnalysisError] = useState("");
+  const [useAnalysisRange, setUseAnalysisRange] = useState(false);
+  const [analysisFromDate, setAnalysisFromDate] = useState(toDateStr(now - 15 * 60 * 1000));
+  const [analysisFromTime, setAnalysisFromTime] = useState(toTimeStr(now - 15 * 60 * 1000));
+  const [analysisToDate, setAnalysisToDate] = useState(toDateStr(now));
+  const [analysisToTime, setAnalysisToTime] = useState(toTimeStr(now));
 
   /* ── Expanded rows ─────────────────────────────────────────────────────── */
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -574,7 +579,7 @@ export default function LogViewerPage() {
         hostname: l.labels?.hostname || "",
         deployment: l.labels?.deployment_name || "",
         message: l.line,
-        labels: l.labels,
+        labels: l.labels || {},
       }));
       const resp = await analyseLogsAndSlack({
         logs: logEntries,
@@ -585,15 +590,29 @@ export default function LogViewerPage() {
         hostname: selectedHostnames[0] || undefined,
         deployment: selectedDeployments[0] || undefined,
         issue_description: issueDesc,
+        analysis_from_ms: useAnalysisRange ? parseDateTimeToMs(analysisFromDate, analysisFromTime) : undefined,
+        analysis_to_ms: useAnalysisRange ? parseDateTimeToMs(analysisToDate, analysisToTime) : undefined,
       });
       setAnalysisResult(resp);
     } catch (e) {
-      setAnalysisError(e instanceof Error ? e.message : "Analysis failed.");
+      const msg = e instanceof Error ? e.message : "Analysis failed.";
+      // Add actionable guidance based on common error patterns
+      if (msg.includes("429") || msg.includes("rate_limit") || msg.includes("too large") || msg.includes("Request too large")) {
+        setAnalysisError("Request too large for the AI model. Try selecting a smaller time range, fewer lines, or enable the analysis time-range filter.");
+      } else if (msg.includes("not available") || msg.includes("503")) {
+        setAnalysisError(`${msg} — Check that the AI model service (Ollama or OpenAI) is running and accessible.`);
+      } else if (msg.includes("not installed") || msg.includes("pull")) {
+        setAnalysisError(msg);
+      } else if (msg.includes("timeout") || msg.includes("ECONNREFUSED") || msg.includes("Network Error")) {
+        setAnalysisError(`${msg} — The backend server may be unreachable. Check that it is running on the expected port.`);
+      } else {
+        setAnalysisError(msg);
+      }
     } finally {
       setAnalysing(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredLines, env, selectedSite, selectedHostnames, selectedDeployments, issueDesc, analysisLines]);
+  }, [filteredLines, env, selectedSite, selectedHostnames, selectedDeployments, issueDesc, analysisLines, useAnalysisRange, analysisFromDate, analysisFromTime, analysisToDate, analysisToTime]);
 
   /* count label */
   const countLabel = useMemo(() => {
@@ -1027,6 +1046,56 @@ export default function LogViewerPage() {
             </label>
           </div>
 
+          {/* ── Analysis time range filter ───────────────────────────────── */}
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useAnalysisRange}
+                onChange={(e) => setUseAnalysisRange(e.target.checked)}
+                className="accent-blue-500"
+              />
+              Narrow analysis to a specific time range
+            </label>
+            {useAnalysisRange && (
+              <div className="flex flex-wrap items-center gap-2 pl-5">
+                <span className="text-[11px] text-slate-500">From</span>
+                <input
+                  type="date"
+                  value={analysisFromDate}
+                  onChange={(e) => setAnalysisFromDate(e.target.value)}
+                  className="rounded border bg-black/30 px-2 py-1 text-xs text-white outline-none focus:border-blue-500"
+                  style={{ borderColor: BORDER }}
+                />
+                <input
+                  type="time"
+                  step="1"
+                  value={analysisFromTime}
+                  onChange={(e) => setAnalysisFromTime(e.target.value)}
+                  className="rounded border bg-black/30 px-2 py-1 text-xs text-white outline-none focus:border-blue-500"
+                  style={{ borderColor: BORDER }}
+                />
+                <span className="text-[11px] text-slate-500">To</span>
+                <input
+                  type="date"
+                  value={analysisToDate}
+                  onChange={(e) => setAnalysisToDate(e.target.value)}
+                  className="rounded border bg-black/30 px-2 py-1 text-xs text-white outline-none focus:border-blue-500"
+                  style={{ borderColor: BORDER }}
+                />
+                <input
+                  type="time"
+                  step="1"
+                  value={analysisToTime}
+                  onChange={(e) => setAnalysisToTime(e.target.value)}
+                  className="rounded border bg-black/30 px-2 py-1 text-xs text-white outline-none focus:border-blue-500"
+                  style={{ borderColor: BORDER }}
+                />
+                <span className="text-[11px] text-slate-500">(UTC)</span>
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center gap-3">
             <button
               onClick={handleAnalyse}
@@ -1050,13 +1119,24 @@ export default function LogViewerPage() {
         </div>
 
         {analysisError && (
-          <div className="mt-4 rounded border px-4 py-3 text-xs text-red-300" style={{ borderColor: "#7f1d1d", background: "#1a0505" }}>
-            {analysisError}
+          <div className="mt-4 flex items-start gap-2 rounded border px-4 py-3 text-xs text-red-300" style={{ borderColor: "#7f1d1d", background: "#1a0505" }}>
+            <span className="flex-1">{analysisError}</span>
+            <button onClick={() => setAnalysisError("")} className="shrink-0 text-red-400 hover:text-red-200">
+              <X size={14} />
+            </button>
           </div>
         )}
 
         {analysisResult && (
           <div className="mt-4 space-y-3">
+            {analysisResult.partial_analysis && (
+              <div className="flex items-start gap-2 rounded border px-4 py-2.5 text-xs text-amber-300" style={{ borderColor: "#78350f", background: "#1a1505" }}>
+                <span className="flex-1">
+                  Logs were too large for a single analysis. Partial analysis was performed on a reduced subset of logs.
+                  For more targeted results, try selecting a narrower time range.
+                </span>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2 text-[11px] text-slate-500">
               <span className="rounded border px-2 py-0.5" style={{ borderColor: BORDER }}>
                 Model: <span className="text-slate-300">{analysisResult.model_used}</span>
@@ -1064,6 +1144,35 @@ export default function LogViewerPage() {
               <span className="rounded border px-2 py-0.5" style={{ borderColor: BORDER }}>
                 Logs: <span className="text-slate-300">{analysisResult.log_count}</span>
               </span>
+              {(analysisResult.actual_total_tokens ?? 0) > 0 ? (() => {
+                const pin  = analysisResult.actual_prompt_tokens     ?? 0;
+                const pout = analysisResult.actual_completion_tokens ?? 0;
+                const ptot = analysisResult.actual_total_tokens      ?? 0;
+                const cost = analysisResult.cost_usd ?? (pin * 2.00 + pout * 8.00) / 1_000_000;
+                const over = ptot > 28000;
+                return (
+                  <span
+                    className="rounded border px-2 py-0.5"
+                    style={{ borderColor: over ? "#7f1d1d" : BORDER, color: over ? "#fca5a5" : undefined }}
+                    title={`Actual tokens used · in=${pin.toLocaleString()} out=${pout.toLocaleString()} total=${ptot.toLocaleString()} · gpt-4.1: $2/M in, $8/M out`}
+                  >
+                    Tokens: <span className="text-slate-300">{pin.toLocaleString()} in | {pout.toLocaleString()} out</span>
+                    {" · "}Cost: <span className="text-emerald-400">${cost.toFixed(4)}</span>
+                  </span>
+                );
+              })() : analysisResult.estimated_tokens != null && (
+                <span
+                  className="rounded border px-2 py-0.5"
+                  style={{
+                    borderColor: analysisResult.estimated_tokens > 28000 ? "#7f1d1d" : BORDER,
+                    color: analysisResult.estimated_tokens > 28000 ? "#fca5a5" : undefined,
+                  }}
+                  title="Estimated prompt tokens sent to the LLM (prompt + max output). Limit: 30 000 TPM for gpt-4.1."
+                >
+                  Tokens: <span className="text-slate-300">~{analysisResult.estimated_tokens.toLocaleString()}</span>
+                  {" / 30 000 TPM"}
+                </span>
+              )}
             </div>
             <div
               className="prose-dark max-h-[500px] overflow-y-auto rounded border p-4"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import io
@@ -26,6 +27,9 @@ from schemas.slack_investigation import (
 logger = get_logger(__name__)
 
 MAX_FILE_CHARS = 12_000
+_URL_RE = re.compile(r"https?://\S+")
+_MAX_ATTACHMENT_WORKERS = 4
+_FILE_DOWNLOAD_TIMEOUT = 15  # seconds per file download
 
 
 @dataclass
@@ -110,12 +114,15 @@ def _find_section(sections: Dict[str, str], *candidates: str) -> str:
 
 class SlackInvestigationService:
     def __init__(self, _llm_service=None) -> None:
+        self._llm_service = _llm_service
         self.client: WebClient | None = None
         self._client_token = ""
         self._user_cache: Dict[str, str] = {}
         self._models_cache: List[str] | None = None
         self.ollama_host = settings.ollama_host.rstrip("/")
         self.text_model = settings.ollama_text_model
+        # Reusable HTTP session for Slack file downloads (connection pooling)
+        self._http_session: requests.Session | None = None
 
     def _slack_token(self) -> str:
         token = resolve_slack_bot_token()
@@ -157,13 +164,30 @@ class SlackInvestigationService:
 
     def llm_status(self) -> SlackLLMStatusResponse:
         self._models_cache = None  # always fetch fresh for status check
+
+        # Gather providers from LLMService if available
+        providers: List[Dict] = []
+        active_provider: Dict | None = None
+        if self._llm_service and hasattr(self._llm_service, "available_providers"):
+            providers = self._llm_service.available_providers()
+            active_provider = self._llm_service.active_provider
+
         if not self._ollama_ping():
+            # Ollama offline — still show OpenAI providers if available
+            openai_providers = [p for p in providers if p.get("type") == "openai"]
+            status = "offline" if not openai_providers else "online"
+            fix_msg = (
+                f"Ollama is not running at {self.ollama_host}. Run: ollama serve"
+                if not openai_providers else None
+            )
             return SlackLLMStatusResponse(
-                status="offline",
+                status=status,
                 text_model=self.text_model,
-                text_ready=False,
+                text_ready=bool(openai_providers),
                 installed=[],
-                fix=f"Ollama is not running at {self.ollama_host}. Run: ollama serve",
+                fix=fix_msg,
+                providers=providers,
+                active_provider=active_provider,
             )
 
         installed = self._ollama_models()
@@ -173,6 +197,8 @@ class SlackInvestigationService:
             text_model=self.text_model,
             text_ready=any(text_prefix in name for name in installed),
             installed=installed,
+            providers=providers,
+            active_provider=active_provider,
         )
 
     def _resolve_user(self, user_id: str | None) -> str:
@@ -196,7 +222,10 @@ class SlackInvestigationService:
         return display
 
     def _download_file(self, url: str) -> bytes:
-        resp = requests.get(url, headers=self._slack_headers(), timeout=30, stream=True)
+        if self._http_session is None:
+            self._http_session = requests.Session()
+            self._http_session.headers.update(self._slack_headers())
+        resp = self._http_session.get(url, timeout=_FILE_DOWNLOAD_TIMEOUT)
         if resp.status_code != 200:
             raise ValueError(f"HTTP {resp.status_code}")
         return resp.content
@@ -215,7 +244,7 @@ class SlackInvestigationService:
 
             pages: List[str] = []
             with pdfplumber.open(io.BytesIO(data)) as pdf:
-                for idx, page in enumerate(pdf.pages, 1):
+                for idx, page in enumerate(pdf.pages[:20], 1):  # cap at 20 pages
                     text = (page.extract_text() or "").strip()
                     if text:
                         pages.append(f"[Page {idx}]\n{text}")
@@ -335,12 +364,12 @@ class SlackInvestigationService:
     ) -> Tuple[List[SlackThreadMessage], List[SlackThreadAttachment]]:
         client = self._require_client()
         cursor = None
-        messages: List[SlackThreadMessage] = []
-        attachments: List[SlackThreadAttachment] = []
         _auto_joined = False
 
-        while len(messages) < max_messages:
-            limit = min(200, max_messages - len(messages))
+        # ── Phase 1: Fetch raw Slack messages (no attachment download yet) ────
+        raw_items: List[Dict] = []  # list of raw Slack message dicts
+        while len(raw_items) < max_messages:
+            limit = min(200, max_messages - len(raw_items))
             try:
                 resp = client.conversations_replies(
                     channel=ref.channel_id,
@@ -378,60 +407,113 @@ class SlackInvestigationService:
             for raw in resp.get("messages", []):
                 if not include_bots and (raw.get("subtype") == "bot_message" or raw.get("bot_id")):
                     continue
-
-                raw_text = raw.get("text") or ""
-                clean_text, log_blocks = _extract_log_blocks(raw_text)
-
-                message_attachments: List[SlackThreadAttachment] = []
-                for slack_file in raw.get("files", []) or []:
-                    item = self._process_attachment(slack_file)
-                    if item:
-                        message_attachments.append(item)
-                        attachments.append(item)
-
-                if not clean_text and not log_blocks and not message_attachments:
-                    continue
-
-                ts = str(raw.get("ts", ""))
-                try:
-                    dt = datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                except Exception:
-                    dt = ts
-
-                user_id = raw.get("user") or raw.get("bot_id")
-                messages.append(
-                    SlackThreadMessage(
-                        ts=ts,
-                        datetime=dt,
-                        user=self._resolve_user(user_id),
-                        text=clean_text,
-                        log_blocks=log_blocks,
-                        attachments=message_attachments,
-                    )
-                )
-                if len(messages) >= max_messages:
+                raw_items.append(raw)
+                if len(raw_items) >= max_messages:
                     break
 
             cursor = (resp.get("response_metadata") or {}).get("next_cursor") or None
             if not cursor:
                 break
 
-        return messages, attachments
+        # ── Phase 2: Batch-resolve unique user IDs (parallel) ─────────────────
+        unique_users = {
+            raw.get("user") or raw.get("bot_id")
+            for raw in raw_items
+            if raw.get("user") or raw.get("bot_id")
+        }
+        users_to_resolve = [
+            uid for uid in unique_users
+            if uid and uid not in self._user_cache
+        ]
+        if users_to_resolve:
+            with ThreadPoolExecutor(max_workers=min(8, len(users_to_resolve))) as pool:
+                futures = {pool.submit(self._resolve_user, uid): uid for uid in users_to_resolve}
+                for fut in as_completed(futures):
+                    try:
+                        fut.result()
+                    except Exception:
+                        pass  # _resolve_user already caches fallback
 
-    def _ollama_chat(self, chat_messages: List[Dict], model: str) -> str:
+        # ── Phase 3: Collect all attachment file dicts for parallel download ──
+        pending_files: List[Tuple[int, Dict]] = []
+        for msg_idx, raw in enumerate(raw_items):
+            for slack_file in raw.get("files", []) or []:
+                pending_files.append((msg_idx, slack_file))
+
+        # Download & process attachments concurrently
+        processed_files: Dict[int, List[SlackThreadAttachment]] = {}
+        all_attachments: List[SlackThreadAttachment] = []
+        if pending_files:
+            with ThreadPoolExecutor(max_workers=_MAX_ATTACHMENT_WORKERS) as pool:
+                futures = {
+                    pool.submit(self._process_attachment, sf): (mi, sf)
+                    for mi, sf in pending_files
+                }
+                for fut in as_completed(futures):
+                    mi, sf = futures[fut]
+                    try:
+                        item = fut.result()
+                    except Exception as exc:
+                        fname = sf.get("name", "unknown")
+                        logger.warning("Attachment processing failed for %s: %s", fname, exc)
+                        item = None
+                    if item:
+                        processed_files.setdefault(mi, []).append(item)
+                        all_attachments.append(item)
+
+        # ── Phase 4: Assemble SlackThreadMessage objects ──────────────────────
+        messages: List[SlackThreadMessage] = []
+        for msg_idx, raw in enumerate(raw_items):
+            raw_text = raw.get("text") or ""
+            clean_text, log_blocks = _extract_log_blocks(raw_text)
+            message_attachments = processed_files.get(msg_idx, [])
+
+            if not clean_text and not log_blocks and not message_attachments:
+                continue
+
+            ts = str(raw.get("ts", ""))
+            try:
+                dt = datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                dt = ts
+
+            user_id = raw.get("user") or raw.get("bot_id")
+            messages.append(
+                SlackThreadMessage(
+                    ts=ts,
+                    datetime=dt,
+                    user=self._resolve_user(user_id),
+                    text=clean_text,
+                    log_blocks=log_blocks,
+                    attachments=message_attachments,
+                )
+            )
+
+        return messages, all_attachments
+
+    def _ollama_chat(self, chat_messages: List[Dict], model: str, max_tokens: int = 3500) -> str:
+        # If LLMService is available, delegate to it for provider-aware routing
+        if self._llm_service and hasattr(self._llm_service, "chat"):
+            return self._llm_service.chat(
+                messages=chat_messages,
+                max_tokens=max_tokens,
+                temperature=0.2,
+                model_override=model if model != self._llm_service.model else None,
+                module="slack_investigation",
+            )
+
+        # Fallback: direct Ollama API call (backward compatibility)
         payload = {
             "model": model,
             "messages": chat_messages,
             "stream": False,
             "options": {
                 "temperature": 0.2,
-                # num_ctx controls KV-cache size; 32768 causes multi-minute
-                # allocation on CPU.  Override via OLLAMA_NUM_CTX env var.
                 "num_ctx": settings.ollama_num_ctx,
             },
         }
         try:
-            resp = requests.post(f"{self.ollama_host}/api/chat", json=payload, timeout=600)
+            resp = requests.post(f"{self.ollama_host}/api/chat", json=payload, timeout=180)
             resp.raise_for_status()
             return (resp.json().get("message") or {}).get("content", "").strip()
         except requests.exceptions.ConnectionError as exc:
@@ -446,60 +528,76 @@ class SlackInvestigationService:
         messages: List[SlackThreadMessage],
         attachments: List[SlackThreadAttachment],
     ) -> Tuple[str, str]:
-        model = req.model_override or self.text_model
+        # Determine model: use request override, active provider, or default
+        model = req.model_override or ""
 
-        # Fall back to text model when the chosen model is not installed
-        installed = self._ollama_models()
-        model_prefix = model.split(":", 1)[0]
-        if not any(model_prefix in name for name in installed):
-            if any(self.text_model.split(":", 1)[0] in name for name in installed):
-                logger.warning(
-                    "Model %s not installed, falling back to text model %s",
-                    model, self.text_model,
-                )
-                model = self.text_model
-            else:
-                raise RuntimeError(
-                    f"Model '{model}' is not installed in Ollama. "
-                    f"Pull it with: ollama pull {model}"
-                )
+        # If LLMService is available and no override specified, use active provider
+        if self._llm_service and hasattr(self._llm_service, "active_provider") and not model:
+            active = self._llm_service.active_provider
+            model = f"{active['type']}:{active['model']}"
+
+        # If still no model, use the default text model
+        if not model:
+            model = self.text_model
+
+        # For Ollama models (without provider prefix), validate installation
+        is_openai = model.startswith("openai:")
+        if not is_openai:
+            plain_model = model.removeprefix("ollama:")
+            installed = self._ollama_models()
+            model_prefix = plain_model.split(":", 1)[0]
+            if not any(model_prefix in name for name in installed):
+                if any(self.text_model.split(":", 1)[0] in name for name in installed):
+                    logger.warning(
+                        "Model %s not installed, falling back to text model %s",
+                        plain_model, self.text_model,
+                    )
+                    plain_model = self.text_model
+                else:
+                    raise RuntimeError(
+                        f"Model '{plain_model}' is not installed in Ollama. "
+                        f"Pull it with: ollama pull {plain_model}"
+                    )
+            model = plain_model
 
         system = (
-            "You are a senior SRE analyzing a Slack incident thread for a warehouse robotics team.\n"
-            "The user-provided description is CONTEXT ONLY — do not repeat or paraphrase it.\n"
-            "Instead, thoroughly read every message, log block, and attachment in the thread.\n\n"
-            "Produce a DETAILED, point-wise summary using ONLY bullet points (- item).\n"
-            "NEVER write long paragraphs. Every piece of information must be a separate bullet.\n\n"
-            "Use exactly these markdown sections:\n\n"
-            "## The Issue\n"
-            "- (bullet per distinct problem or symptom observed in the thread)\n\n"
-            "## Timeline of Key Events\n"
-            "- [HH:MM UTC] (what happened, quoting exact log lines or error messages)\n"
-            "- (one bullet per significant event, in chronological order)\n\n"
-            "## Important Logs & Errors\n"
-            "- (quote exact log lines, error codes, stack traces found in the thread)\n"
-            "- (include file names, service names, error types)\n\n"
-            "## Root Cause\n"
-            "- (bullet per contributing factor identified or suspected)\n"
-            "- (state uncertainty explicitly: 'Likely...', 'Unconfirmed...')\n\n"
-            "## Actions Taken\n"
-            "- (bullet per action someone performed during the incident)\n\n"
-            "## Resolution & Current Status\n"
-            "- (bullet per resolution step or current state)\n\n"
-            "## Recommended Next Steps\n"
-            "- (bullet per recommended follow-up action)\n\n"
-            "Rules:\n"
-            "- Do NOT mention user names; write impersonally.\n"
-            "- Do NOT write prose paragraphs; use ONLY bullet points.\n"
-            "- Include ALL relevant log lines and error messages from the thread.\n"
-            "- If information for a section is missing, write: - No information available in thread.\n"
+            "You are a senior SRE producing a structured incident summary for a warehouse robotics team.\n"
+            "You MUST summarize with respect to the ISSUE NAME and DESCRIPTION provided — every insight must be relevant to that specific issue.\n\n"
+            "STRICT RULES:\n"
+            "- Do NOT include any timestamps, dates, or times.\n"
+            "- Do NOT include any URLs, rosbag links, or file paths.\n"
+            "- Do NOT copy sentences from the thread; fully rephrase everything.\n"
+            "- Do NOT mention user names or Slack handles; write impersonally.\n"
+            "- Do NOT write long paragraphs; use ONLY concise bullet points (- item).\n"
+            "- Focus every bullet on meaningful technical insight, not generic filler.\n\n"
+            "Use EXACTLY these five markdown sections:\n\n"
+            "## Issue Overview\n"
+            "- (concise bullets describing the incident in context of the issue name/description)\n"
+            "- (affected systems, components, or robots)\n\n"
+            "## Key Observations\n"
+            "- (specific technical findings from messages, logs, and attachments)\n"
+            "- (quote exact error messages or log lines without timestamps)\n"
+            "- (include service names, error codes, node names, metric values)\n\n"
+            "## Root Cause Analysis\n"
+            "- (contributing factors identified or suspected, tied to the issue)\n"
+            "- (state uncertainty explicitly: 'Likely…', 'Unconfirmed…')\n\n"
+            "## Actions Taken / Suggested Fixes\n"
+            "- (actions performed during the incident)\n"
+            "- (fixes applied or proposed)\n\n"
+            "## Current Status / Risks\n"
+            "- (resolution state: resolved, mitigated, or ongoing)\n"
+            "- (remaining risks or recommended follow-ups)\n\n"
+            "If information for a section is unavailable, write: - No information available in thread.\n"
         )
 
+        # Strip timestamps and URLs from thread messages for the prompt
         thread_lines: List[str] = []
         for msg in messages:
-            line = f"[{msg.datetime}] {msg.user}: {msg.text}"
+            clean_msg = _URL_RE.sub("", msg.text).strip()
+            line = f"{msg.user}: {clean_msg}"
             for idx, block in enumerate(msg.log_blocks, 1):
-                line += f"\n  [Log block {idx}]\n{block[:2000]}"
+                clean_block = _URL_RE.sub("", block[:2000]).strip()
+                line += f"\n  [Log block {idx}]\n{clean_block}"
             for attachment in msg.attachments:
                 if attachment.extracted and attachment.filetype != "image":
                     line += f"\n  [Attachment: {attachment.filename} ({attachment.filetype})]\n{attachment.extracted[:3000]}"
@@ -517,10 +615,10 @@ class SlackInvestigationService:
                 )
 
         prompt = (
+            f"ISSUE NAME / DESCRIPTION:\n{req.description}\n\n"
+            f"SITE: {req.site_id or 'N/A'}\n\n"
             f"SLACK THREAD ({len(messages)} messages)\n"
-            f"Site: {req.site_id or 'N/A'}\n"
-            f"Context (reference only, do not repeat): {req.description}\n\n"
-            "--- FULL THREAD MESSAGES ---\n\n"
+            "--- MESSAGES ---\n\n"
             + "\n\n".join(thread_lines)
         )
         if attachment_sections:
@@ -539,7 +637,9 @@ class SlackInvestigationService:
         user_message: Dict = {"role": "user", "content": prompt}
         chat.append(user_message)
 
-        summary = self._ollama_chat(chat, model)
+        # Use lower max_tokens for OpenAI to improve response speed
+        max_tok = 2000 if is_openai else 3500
+        summary = self._ollama_chat(chat, model, max_tokens=max_tok)
         return summary, model
 
     def _infer_risk(self, summary: str) -> str:
@@ -551,24 +651,37 @@ class SlackInvestigationService:
         return "low"
 
     def investigate(self, req: SlackThreadInvestigationRequest) -> SlackThreadInvestigationResponse:
-        if not self._ollama_ping():
+        # Determine if we're using OpenAI (skip Ollama-specific checks)
+        using_openai = False
+        if self._llm_service and hasattr(self._llm_service, "active_provider"):
+            using_openai = self._llm_service.active_provider.get("type") == "openai"
+        if req.model_override and req.model_override.startswith("openai:"):
+            using_openai = True
+
+        if not using_openai and not self._ollama_ping():
             raise RuntimeError(
                 f"Ollama is not running at {self.ollama_host}. Run: ollama serve"
             )
 
         ref = parse_slack_thread_url(req.slack_thread_url)
 
-        # Pre-warm the model so inference starts immediately once the prompt
-        # is ready.  Uses the override model when specified.
-        warm_model = req.model_override or self.text_model
-        try:
-            requests.post(
-                f"{self.ollama_host}/api/generate",
-                json={"model": warm_model, "prompt": "", "keep_alive": "10m"},
-                timeout=5,
-            )
-        except Exception:
-            pass  # best-effort; the real call will load it if this fails
+        # Pre-warm Ollama model non-blocking (skip for OpenAI)
+        if not using_openai:
+            warm_model = req.model_override or self.text_model
+            if warm_model.startswith("ollama:"):
+                warm_model = warm_model.removeprefix("ollama:")
+            def _warm():
+                try:
+                    requests.post(
+                        f"{self.ollama_host}/api/generate",
+                        json={"model": warm_model, "prompt": "", "keep_alive": "10m"},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+            # Fire-and-forget — model warms while we fetch messages
+            import threading
+            threading.Thread(target=_warm, daemon=True).start()
 
         messages, attachments = self._fetch_thread_messages(ref, req.include_bots, req.max_messages)
         if not messages:
@@ -577,44 +690,41 @@ class SlackInvestigationService:
         summary, model_used = self._generate_summary(req, messages, attachments)
         sections = _split_markdown_sections(summary)
 
-        issue = _find_section(sections, "the issue", "issue", "problem", "incident")
-        root_cause = _find_section(sections, "root cause", "cause", "root cause analysis")
-        timeline_events = _find_section(sections, "timeline of key events", "timeline", "key events")
-        logs_errors = _find_section(sections, "important logs & errors", "important logs", "logs & errors", "logs", "errors")
-        actions_taken = _find_section(sections, "actions taken", "actions performed")
-        resolution = _find_section(sections, "resolution & current status", "resolution & status", "resolution", "status", "current status")
-        next_steps = _find_section(sections, "recommended next steps", "next steps", "recommendations", "recommended actions", "action items")
+        issue = _find_section(sections, "issue overview", "the issue", "issue", "problem", "incident")
+        observations = _find_section(sections, "key observations", "observations", "important logs & errors", "important logs", "logs & errors")
+        root_cause = _find_section(sections, "root cause analysis", "root cause", "cause")
+        actions_taken = _find_section(sections, "actions taken / suggested fixes", "actions taken", "suggested fixes", "actions performed")
+        status_risks = _find_section(sections, "current status / risks", "current status", "risks", "resolution & current status", "resolution", "status")
 
         # Build thread_summary from the key sections as bullet-point text
         summary_parts: List[str] = []
         if issue:
-            summary_parts.append(f"**The Issue**\n{issue}")
-        if timeline_events:
-            summary_parts.append(f"**Timeline of Key Events**\n{timeline_events}")
-        if logs_errors:
-            summary_parts.append(f"**Important Logs & Errors**\n{logs_errors}")
+            summary_parts.append(f"**Issue Overview**\n{issue}")
+        if observations:
+            summary_parts.append(f"**Key Observations**\n{observations}")
         if root_cause:
-            summary_parts.append(f"**Root Cause**\n{root_cause}")
+            summary_parts.append(f"**Root Cause Analysis**\n{root_cause}")
         if actions_taken:
-            summary_parts.append(f"**Actions Taken**\n{actions_taken}")
-        if resolution:
-            summary_parts.append(f"**Resolution & Current Status**\n{resolution}")
+            summary_parts.append(f"**Actions Taken / Suggested Fixes**\n{actions_taken}")
+        if status_risks:
+            summary_parts.append(f"**Current Status / Risks**\n{status_risks}")
 
         thread_summary = "\n\n".join(summary_parts).strip() or summary[:2000]
 
         findings = _as_bullets(
-            "\n".join(filter(None, [issue, timeline_events, logs_errors, root_cause]))
+            "\n".join(filter(None, [issue, observations, root_cause]))
         ) or [
             "Review raw analysis for detailed evidence extracted from messages and files."
         ]
         actions = _as_bullets(
-            "\n".join(filter(None, [actions_taken, next_steps]))
+            "\n".join(filter(None, [actions_taken, status_risks]))
         ) or [
             "No explicit action items detected; assign owners to follow up on unresolved findings."
         ]
 
         participants = sorted({msg.user for msg in messages if msg.user})
 
+        usage = getattr(self._llm_service, "last_usage", {}) if self._llm_service else {}
         return SlackThreadInvestigationResponse(
             workspace=ref.workspace,
             channel_id=ref.channel_id,
@@ -630,4 +740,8 @@ class SlackInvestigationService:
             timeline=messages,
             attachments=attachments,
             raw_analysis=summary,
+            actual_prompt_tokens     = usage.get("prompt_tokens", 0),
+            actual_completion_tokens = usage.get("completion_tokens", 0),
+            actual_total_tokens      = usage.get("total_tokens", 0),
+            cost_usd                 = usage.get("cost_usd", 0.0),
         )
