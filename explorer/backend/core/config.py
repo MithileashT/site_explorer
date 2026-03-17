@@ -73,6 +73,13 @@ class _Settings:
     bag_upload_dir: str = os.getenv("BAG_UPLOAD_DIR", "data/bags")
     sites_root:     str = os.getenv("SITES_ROOT",     "data/sites")
 
+    # ── RIO (Rapyuta IO) ────────────────────────────────────────────────────
+    rio_config_path: str = os.getenv(
+        "RIO_CONFIG_PATH",
+        os.path.expanduser("~/.config/rio-cli/config.json"),
+    )
+    rio_download_timeout: int = int(os.getenv("RIO_DOWNLOAD_TIMEOUT_SECONDS", "300"))
+
     # ── FAISS / Vector DB ────────────────────────────────────────────────────
     faiss_path:    str = os.getenv("FAISS_PATH",    "data/faiss.index")
     metadata_path: str = os.getenv("META_PATH",     "data/metadata.json")

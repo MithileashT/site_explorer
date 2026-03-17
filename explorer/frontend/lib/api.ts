@@ -24,6 +24,9 @@ import type {
   BagTopicsResponse,
   AIProvidersResponse,
   AIUsageResponse,
+  RIOFetchRequest,
+  RIOFetchResponse,
+  RIOStatusResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -158,6 +161,18 @@ export async function listBagTopics(
   const { data } = await http.get<BagTopicsResponse>("/bags/topics", {
     params: { bag_path: bagPath },
   });
+  return data;
+}
+
+// ── RIO Bag Fetch ─────────────────────────────────────────────────────────────
+
+export async function getRIOStatus(): Promise<RIOStatusResponse> {
+  const { data } = await http.get<RIOStatusResponse>("/bags/rio/status");
+  return data;
+}
+
+export async function fetchBagFromRIO(params: RIOFetchRequest): Promise<RIOFetchResponse> {
+  const { data } = await http.post<RIOFetchResponse>("/bags/rio/fetch", params);
   return data;
 }
 

@@ -18,11 +18,14 @@ from schemas.bag_analysis import (
     MapDiffResponse, LogEntry, TimelineBucket,
     TrajectoryRequest, TrajectoryResponse, TrajectoryPoint,
     BagTopicInfo, BagTopicsResponse,
+    RIOFetchRequest, RIOFetchResponse, RIOStatusResponse,
 )
 from services.ros.log_extractor import ROSLogExtractor
 from services.ros.log_analyzer_engine import LogAnalyzerEngine
 from services.ros.map_processor import process_bag_for_changes
 from services.ros.trajectory_extractor import TrajectoryExtractor
+from services.rio import rio_service
+from services.rio.rio_service import RioNotConfiguredError, RioConfigMalformedError
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -292,5 +295,83 @@ def list_bag_topics(bag_path: str = Query(...)):
     return BagTopicsResponse(
         bag_path=bag_path,
         topics=[BagTopicInfo(**t) for t in topics],
+    )
+
+
+# ── RIO Bag Fetch ─────────────────────────────────────────────────────────────
+
+@router.get("/api/v1/bags/rio/status", tags=["bags"])
+def rio_status():
+    """Return RIO CLI configuration status."""
+    try:
+        config = rio_service.get_rio_config()
+        configured = True
+        has_token = bool(config["auth_token"])
+        has_org = bool(config["organization_id"])
+        has_proj = bool(config["project_id"])
+        organization = config["organization_id"]
+        project = config["project_id"]
+    except (RioNotConfiguredError, RioConfigMalformedError):
+        configured = has_token = has_org = has_proj = False
+        organization = project = ""
+
+    return RIOStatusResponse(
+        configured=configured,
+        has_token=has_token,
+        has_organization=has_org,
+        has_project=has_proj,
+        rio_cli_available=rio_service.is_rio_cli_available(),
+        organization=organization,
+        project=project,
+    )
+
+
+@router.post("/api/v1/bags/rio/fetch", tags=["bags"])
+def rio_fetch(req: RIOFetchRequest):
+    """Download a bag from RIO (shared URL or device upload)."""
+    import subprocess
+
+    has_url = bool(req.shared_url)
+    has_device = bool(req.device and req.filename)
+
+    if has_url == has_device:
+        raise HTTPException(422, "Provide either shared_url, or device + filename.")
+
+    try:
+        if has_url:
+            dest = rio_service.download_shared_url(
+                req.shared_url,
+                project_override=req.project_override or "",
+            )
+            source = "shared_url"
+        else:
+            dest = rio_service.download_device_upload(
+                device=req.device,
+                filename=req.filename,
+                project_override=req.project_override or "",
+            )
+            source = "device_upload"
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RioNotConfiguredError as e:
+        raise HTTPException(503, str(e))
+    except RioConfigMalformedError as e:
+        raise HTTPException(503, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            504,
+            f"Device download timed out after {settings.rio_download_timeout} seconds.",
+        )
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+    size_bytes = dest.stat().st_size
+    return RIOFetchResponse(
+        bag_path=str(dest),
+        filename=dest.name,
+        size_mb=round(size_bytes / (1024 * 1024), 2),
+        source=source,
     )
 

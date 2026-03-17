@@ -4,6 +4,7 @@ import { useState } from "react";
 import { analyzeBag, fetchTimeline } from "@/lib/api";
 import type { BagLogAnalysisResponse, BagTimeline } from "@/lib/types";
 import BagUpload from "@/components/bags/BagUpload";
+import RIOFetchPanel from "@/components/bags/RIOFetchPanel";
 import LogVolumeChart from "@/components/bags/LogVolumeChart";
 import BagLogDebugger from "@/components/bags/BagLogDebugger";
 import MapDiffPanel from "@/components/bags/MapDiffPanel";
@@ -16,9 +17,12 @@ import {
   ChevronRight,
   Info,
   Bot,
+  UploadCloud,
+  CloudDownload,
 } from "lucide-react";
 
 type Tab = "logs" | "mapdiff";
+type BagSource = "upload" | "rio";
 
 export default function BagsPage() {
   const [bagPath, setBagPath] = useState<string | null>(null);
@@ -27,6 +31,7 @@ export default function BagsPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<Tab>("logs");
+  const [bagSource, setBagSource] = useState<BagSource>("upload");
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [showRawLLM, setShowRawLLM] = useState(false);
 
@@ -74,12 +79,31 @@ export default function BagsPage() {
         </div>
       </div>
 
-      {/* ── Upload ────────────────────────────────────────── */}
+      {/* ── Bag Source (Upload / RIO) ─────────────────────── */}
       <section className="card">
-        <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-          Upload Bag File
-        </h2>
-        <BagUpload onUploaded={onUploaded} />
+        <div className="flex gap-2 mb-3">
+          {(
+            [
+              { id: "upload", label: "Upload File", icon: UploadCloud },
+              { id: "rio", label: "Fetch from RIO", icon: CloudDownload },
+            ] as { id: BagSource; label: string; icon: React.ElementType }[]
+          ).map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setBagSource(id)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                bagSource === id
+                  ? "bg-blue-600/20 text-blue-400 border border-blue-600/30"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent"
+              }`}
+            >
+              <Icon size={13} />
+              {label}
+            </button>
+          ))}
+        </div>
+        {bagSource === "upload" && <BagUpload onUploaded={onUploaded} />}
+        {bagSource === "rio" && <RIOFetchPanel onFetched={onUploaded} />}
       </section>
 
       {/* ── Collapsible Timeline ──────────────────────────── */}

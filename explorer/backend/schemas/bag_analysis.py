@@ -101,3 +101,29 @@ class BagTopicInfo(BaseModel):
 class BagTopicsResponse(BaseModel):
     bag_path: str
     topics:   List[BagTopicInfo]
+
+
+# ── RIO Bag Fetch ──────────────────────────────────────────────────────────────
+
+class RIOFetchRequest(BaseModel):
+    shared_url:       Optional[str] = None
+    device:           Optional[str] = None
+    filename:         Optional[str] = None
+    project_override: Optional[str] = None
+
+
+class RIOFetchResponse(BaseModel):
+    bag_path:  str
+    filename:  str
+    size_mb:   float
+    source:    str   # "shared_url" or "device_upload"
+
+
+class RIOStatusResponse(BaseModel):
+    configured:        bool
+    has_token:         bool
+    has_organization:  bool
+    has_project:       bool
+    rio_cli_available: bool
+    organization:      str = ""
+    project:           str = ""

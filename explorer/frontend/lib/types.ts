@@ -512,4 +512,29 @@ export interface BagTopicsResponse {
   topics: BagTopicInfo[];
 }
 
+// ──────────────────────────────────────────────
+// RIO Bag Fetch
+// ──────────────────────────────────────────────
+export interface RIOFetchRequest {
+  shared_url?: string;
+  device?: string;
+  filename?: string;
+  project_override?: string;
+}
 
+export interface RIOFetchResponse {
+  bag_path: string;
+  filename: string;
+  size_mb: number;
+  source: "shared_url" | "device_upload";
+}
+
+export interface RIOStatusResponse {
+  configured: boolean;
+  has_token: boolean;
+  has_organization: boolean;
+  has_project: boolean;
+  rio_cli_available: boolean;
+  organization: string;
+  project: string;
+}
