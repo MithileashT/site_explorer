@@ -248,18 +248,40 @@ export default function BagUploadPanel({
     <div
       className={clsx(
         "absolute bottom-0 left-0 right-0 z-20 transition-all duration-200",
-        "border-t-2 border-[#00e5ff]/30 bg-[#0d1117]",
+        "border-t-2 bg-[#0a0f1a]",
+        phase === "done"
+          ? "border-emerald-500/50"
+          : phase === "error"
+          ? "border-red-500/40"
+          : "border-[#00e5ff]/50",
       )}
     >
       {/* ── Collapsed / header bar ─────────────────────────────────── */}
       <div
-        className="flex items-center gap-2.5 px-4 h-11 cursor-pointer select-none bg-[#161b22] border-b border-[#30363d]"
+        className={clsx(
+          "flex items-center gap-2.5 px-4 h-11 cursor-pointer select-none border-b border-[#1e2842]",
+          phase === "done"
+            ? "bg-emerald-950/60"
+            : phase === "error"
+            ? "bg-red-950/50"
+            : "bg-[#0e1628]"
+        )}
         onClick={() => setExpanded(v => !v)}
       >
-        <div className="w-6 h-6 rounded bg-[#00e5ff]/15 border border-[#00e5ff]/40 flex items-center justify-center">
-          <Upload size={12} className="text-[#00e5ff]" />
+        <div className={clsx(
+          "w-6 h-6 rounded flex items-center justify-center shrink-0",
+          phase === "done"
+            ? "bg-emerald-500/20 border border-emerald-500/40"
+            : "bg-[#00e5ff]/20 border border-[#00e5ff]/50"
+        )}>
+          <Upload size={12} className={phase === "done" ? "text-emerald-400" : "text-[#00e5ff]"} />
         </div>
-        <span className="text-sm font-semibold text-[#e6edf3]">ROS Bag Upload</span>
+        <span className={clsx(
+          "text-sm font-semibold",
+          phase === "done" ? "text-emerald-300" : "text-[#e6edf3]"
+        )}>
+          ROS Bag Upload
+        </span>
 
         {/* Status badge */}
         {phase === "done" && (
@@ -281,25 +303,26 @@ export default function BagUploadPanel({
           </span>
         )}
 
-        {/* Clear trajectory shortcut when panel is collapsed */}
-        {hasTrajectory && !expanded && (
-          <button
-            onClick={e => { e.stopPropagation(); handleClear(); }}
-            title="Clear trajectory"
-            className="ml-auto mr-1 text-[#c9d1d9] hover:text-red-400 transition-colors"
-          >
-            <Trash2 size={13} />
-          </button>
-        )}
-
-        <div className={clsx("ml-auto text-[#c9d1d9] transition-transform", expanded ? "rotate-180" : "")}>
-          {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+        {/* Right controls: clear button + chevron, grouped together */}
+        <div className="ml-auto flex items-center gap-1">
+          {hasTrajectory && (
+            <button
+              onClick={e => { e.stopPropagation(); handleClear(); }}
+              title="Clear trajectory"
+              className="p-1 rounded text-[#8b949e] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+          <div className={clsx("p-1 text-[#8b949e] transition-transform duration-200", expanded ? "rotate-180" : "")}>
+            {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </div>
         </div>
       </div>
 
       {/* ── Expanded body ───────────────────────────────────────────── */}
       {expanded && (
-        <div className="px-4 pb-4 pt-2 flex flex-col gap-3 bg-[#0d1117]">
+        <div className="px-4 pb-4 pt-3 flex flex-col gap-3 bg-[#0a0f1a]">
           {/* Drop-zone / file selector row */}
           <div className="flex items-stretch gap-2.5">
             {/* Drop zone */}
@@ -391,10 +414,10 @@ export default function BagUploadPanel({
               onClick={handleUpload}
               disabled={!canUpload}
               className={clsx(
-                "flex items-center gap-1.5 px-4 rounded-lg text-[13px] font-semibold transition-all",
+                "flex items-center gap-1.5 px-4 rounded-lg text-[13px] font-bold transition-all shrink-0",
                 canUpload
-                  ? "bg-[#00e5ff] hover:bg-[#00b8d4] text-[#0d1117]"
-                  : "bg-[#21262d] text-[#484f58] cursor-not-allowed"
+                  ? "bg-[#00e5ff] hover:bg-[#33eaff] text-[#030b14] shadow-[0_0_12px_rgba(0,229,255,0.35)] hover:shadow-[0_0_18px_rgba(0,229,255,0.5)]"
+                  : "bg-[#1c2636] text-[#4a5568] cursor-not-allowed"
               )}
             >
               {busy ? (
@@ -471,10 +494,10 @@ export default function BagUploadPanel({
                 onClick={handleExtractWithTopic}
                 disabled={!selectedTopic}
                 className={clsx(
-                  "w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold transition-all",
+                  "w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-bold transition-all",
                   selectedTopic
-                    ? "bg-[#00e5ff] hover:bg-[#00b8d4] text-[#0d1117]"
-                    : "bg-[#21262d] text-[#484f58] cursor-not-allowed"
+                    ? "bg-[#00e5ff] hover:bg-[#33eaff] text-[#030b14] shadow-[0_0_10px_rgba(0,229,255,0.3)]"
+                    : "bg-[#1c2636] text-[#4a5568] cursor-not-allowed"
                 )}
               >
                 <Route size={12} />

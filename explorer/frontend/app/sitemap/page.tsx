@@ -194,7 +194,7 @@ export default function SiteMapPage() {
 
   // Animation loop: advance playbackIndex based on trajectory timestamps and speed
   useEffect(() => {
-    if (!isPlaying || trajectory.length < 2 || playbackIndex == null) return;
+    if (!isPlaying || trajectory.length < 2) return;
 
     playbackLastRef.current = performance.now();
 
@@ -203,7 +203,7 @@ export default function SiteMapPage() {
       playbackLastRef.current = now;
 
       setPlaybackIndex(prev => {
-        if (prev == null) return prev;
+        if (prev == null) return 0; // start from beginning if somehow null
         const curTime = trajectory[prev].timestamp;
         const advance = dt * playbackSpeed;
         const targetTime = curTime + advance;
@@ -227,7 +227,9 @@ export default function SiteMapPage() {
 
     playbackRafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(playbackRafRef.current);
-  }, [isPlaying, trajectory, playbackSpeed, playbackIndex]);
+    // playbackIndex is intentionally excluded: functional updater accesses prev value,
+    // so including it would cause the RAF loop to cancel/restart every single frame.
+  }, [isPlaying, trajectory, playbackSpeed]);
 
   const handlePlayPause = useCallback(() => {
     if (trajectory.length < 2) return;
@@ -1102,7 +1104,7 @@ export default function SiteMapPage() {
 
             {/* Playback controls — shown when trajectory is loaded */}
             {trajectory.length >= 2 && (
-              <div className="absolute bottom-10 left-0 right-0 z-15">
+              <div className="absolute bottom-10 left-0 right-0 z-[25]">
                 <PlaybackPanel
                   trajectory={trajectory}
                   playbackIndex={playbackIndex ?? 0}
