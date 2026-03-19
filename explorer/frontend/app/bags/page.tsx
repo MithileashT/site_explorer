@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { analyzeBag, fetchTimeline } from "@/lib/api";
 import { useBagsStore } from "@/lib/stores/bags-store";
-import { useHydrated } from "@/lib/stores/use-hydrated";
 import BagUpload from "@/components/bags/BagUpload";
 import RIOFetchPanel from "@/components/bags/RIOFetchPanel";
 import RIOUploadPanel from "@/components/bags/RIOUploadPanel";
@@ -30,7 +29,6 @@ type BagSource = "upload" | "rio" | "device";
 export default function BagsPage() {
   // Persisted state from store
   const { bagPath, setBagPath, timeline, setTimeline, analysis, setAnalysis, tab, setTab, bagSource, setBagSource, resetBags } = useBagsStore();
-  const hydrated = useHydrated();
   // Transient local state — NOT persisted
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
@@ -75,7 +73,7 @@ export default function BagsPage() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto animate-fade-in space-y-5" style={{ visibility: hydrated ? "visible" : "hidden" }}>
+    <div className="p-6 max-w-6xl mx-auto animate-fade-in space-y-5">
       {/* ── Header ────────────────────────────────────────── */}
       <div className="flex items-center gap-3">
         <PackageSearch size={20} className="text-blue-400" />

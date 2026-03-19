@@ -40,7 +40,6 @@ import {
   setAIProvider,
 } from "@/lib/api";
 import { useInvestigateStore } from "@/lib/stores/investigate-store";
-import { useHydrated } from "@/lib/stores/use-hydrated";
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  DESIGN TOKENS                                                            */
@@ -331,8 +330,6 @@ function SingleSelect({ label, options, value, onChange, loading }: SingleSelect
 /*  MAIN PAGE                                                                */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 export default function LogViewerPage() {
-  const hydrated = useHydrated();
-
   /* ── Persisted state from Zustand store ────────────────────────────────── */
   const {
     env, setEnv,
@@ -622,13 +619,16 @@ export default function LogViewerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-fetch logs on mount if filters are persisted but heavy data was lost
+  // Re-fetch logs when selectedSite becomes available (covers both client-nav
+  // and page reload where Zustand hydrates from sessionStorage asynchronously)
+  const autoFetchedRef = useRef(false);
   useEffect(() => {
-    if (selectedSite && allLines.length === 0 && !loading) {
+    if (!autoFetchedRef.current && selectedSite && allLines.length === 0 && !loading) {
+      autoFetchedRef.current = true;
       doFetch();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedSite]);
 
   /* count label */
   const countLabel = useMemo(() => {
@@ -643,7 +643,7 @@ export default function LogViewerPage() {
   /*  RENDER                                                               */
   /* ═══════════════════════════════════════════════════════════════════════ */
   return (
-    <div className="min-h-screen" style={{ background: PAGE_BG, visibility: hydrated ? "visible" : "hidden" }}>
+    <div className="min-h-screen" style={{ background: PAGE_BG }}>
       {/* ── FILTER BAR ───────────────────────────────────────────────────── */}
       <div
         className="flex flex-wrap items-center gap-0.5 border-b px-3 py-1.5"

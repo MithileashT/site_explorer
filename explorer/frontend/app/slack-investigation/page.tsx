@@ -24,7 +24,6 @@ import type {
   SlackLLMStatusResponse,
 } from "@/lib/types";
 import { useSlackInvestigationStore } from "@/lib/stores/slack-investigation-store";
-import { useHydrated } from "@/lib/stores/use-hydrated";
 
 const headingFont = Space_Grotesk({
   subsets: ["latin"],
@@ -76,7 +75,6 @@ function CopyButton({ text, className = "" }: { text: string; className?: string
 }
 
 export default function SlackInvestigationPage() {
-  const hydrated = useHydrated();
   const {
     result, setResult,
     sites, setSites,
@@ -197,7 +195,7 @@ export default function SlackInvestigationPage() {
   }
 
   return (
-    <div className={`${headingFont.variable} ${bodyFont.variable} relative mx-auto max-w-[1400px] px-4 pb-20 pt-6 lg:px-8`} style={{ visibility: hydrated ? "visible" : "hidden" }}>
+    <div className={`${headingFont.variable} ${bodyFont.variable} relative mx-auto max-w-[1400px] px-4 pb-20 pt-6 lg:px-8`}>
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <div className="absolute -left-20 top-0 h-80 w-80 rounded-full bg-sky-400/15 blur-3xl" />
         <div className="absolute right-2 top-16 h-80 w-80 rounded-full bg-emerald-400/10 blur-3xl" />

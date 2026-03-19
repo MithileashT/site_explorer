@@ -38,7 +38,6 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { useSitemapStore } from "@/lib/stores/sitemap-store";
-import { useHydrated } from "@/lib/stores/use-hydrated";
 
 // ── Legend config ──────────────────────────────────────────────────────────────
 
@@ -67,8 +66,6 @@ const REGION_LEGEND = [
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function SiteMapPage() {
-  const hydrated = useHydrated();
-
   // Persisted state from Zustand store
   const {
     siteId, setSiteId,
@@ -436,7 +433,7 @@ export default function SiteMapPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-[#0a0f1a]" style={{ visibility: hydrated ? "visible" : "hidden" }}>
+    <div className="flex flex-col h-screen overflow-hidden bg-[#0a0f1a]">
 
       {/* ── Top bar ─────────────────────────────────────────────────────── */}
       <header className="shrink-0 flex items-center gap-3 px-4 h-12 border-b border-white/[0.07] bg-[#0d1321]/95 backdrop-blur-sm relative z-[60]">

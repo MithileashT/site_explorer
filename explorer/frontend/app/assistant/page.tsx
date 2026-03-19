@@ -6,10 +6,8 @@ import type { SSEEvent } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import { Bot, Send, Loader2, User, RefreshCw } from "lucide-react";
 import { useAssistantStore } from "@/lib/stores/assistant-store";
-import { useHydrated } from "@/lib/stores/use-hydrated";
 
 export default function AssistantPage() {
-  const hydrated = useHydrated();
   const { messages, addMessage, updateMessage, input, setInput, resetAssistant } = useAssistantStore();
   const [busy,    setBusy]    = useState(false);
   const [steps,   setSteps]   = useState<string[]>([]);
@@ -118,7 +116,7 @@ export default function AssistantPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen max-h-screen" style={{ visibility: hydrated ? "visible" : "hidden" }}>
+    <div className="flex flex-col h-screen max-h-screen">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
         <div className="flex items-center gap-2.5">
