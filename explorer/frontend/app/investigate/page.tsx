@@ -36,11 +36,11 @@ import {
   fetchLogVolume,
   fetchLogQuery,
   analyseLogsAndSlack,
+  getAIProviders,
+  setAIProvider,
 } from "@/lib/api";
-import type {
-  LokiLogLine,
-  AnalyseResponse,
-} from "@/lib/types";
+import { useInvestigateStore } from "@/lib/stores/investigate-store";
+import { useHydrated } from "@/lib/stores/use-hydrated";
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  DESIGN TOKENS                                                            */
@@ -331,59 +331,51 @@ function SingleSelect({ label, options, value, onChange, loading }: SingleSelect
 /*  MAIN PAGE                                                                */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 export default function LogViewerPage() {
-  /* ── Filter state (cascading) ──────────────────────────────────────────── */
-  const [env, setEnv] = useState(ENVIRONMENTS[0]);
-  const [siteOptions, setSiteOptions] = useState<string[]>([]);
-  const [selectedSite, setSelectedSite] = useState("");
-  const [hostnameOptions, setHostnameOptions] = useState<string[]>([]);
-  const [selectedHostnames, setSelectedHostnames] = useState<string[]>([]);
-  const [deploymentOptions, setDeploymentOptions] = useState<string[]>([]);
-  const [selectedDeployments, setSelectedDeployments] = useState<string[]>([]);
-  const [searchText, setSearchText] = useState("");
-  const [excludeText, setExcludeText] = useState("");
+  const hydrated = useHydrated();
 
+  /* ── Persisted state from Zustand store ────────────────────────────────── */
+  const {
+    env, setEnv,
+    selectedSite, setSelectedSite,
+    siteOptions, setSiteOptions,
+    hostnameOptions, setHostnameOptions,
+    selectedHostnames, setSelectedHostnames,
+    deploymentOptions, setDeploymentOptions,
+    selectedDeployments, setSelectedDeployments,
+    searchText, setSearchText,
+    excludeText, setExcludeText,
+    fromDate, setFromDate, fromTime, setFromTime,
+    toDate, setToDate, toTime, setToTime,
+    activeQuick, setActiveQuick,
+    allLines, setAllLines,
+    totalCount, setTotalCount,
+    volumeData, setVolumeData,
+    issueDesc, setIssueDesc,
+    analysisResult, setAnalysisResult,
+    providers, setProviders,
+    activeProvider, setActiveProvider,
+  } = useInvestigateStore();
+
+  /* ── Transient local state ─────────────────────────────────────────────── */
   const [loadingSites, setLoadingSites] = useState(false);
   const [loadingHosts, setLoadingHosts] = useState(false);
   const [loadingDeps, setLoadingDeps] = useState(false);
-
-  /* ── Time range state ──────────────────────────────────────────────────── */
-  const now = Date.now();
-  const [fromDate, setFromDate] = useState(toDateStr(now - 15 * 60 * 1000));
-  const [fromTime, setFromTime] = useState(toTimeStr(now - 15 * 60 * 1000));
-  const [toDate, setToDate] = useState(toDateStr(now));
-  const [toTime, setToTime] = useState(toTimeStr(now));
-  const [activeQuick, setActiveQuick] = useState("Last 15m");
-
-  /* ── Log data ──────────────────────────────────────────────────────────── */
-  const [allLines, setAllLines] = useState<LokiLogLine[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState("");
-
-  /* ── Volume data ───────────────────────────────────────────────────────── */
-  const [volumeData, setVolumeData] = useState<{ ts: number; label: string; count: number }[]>([]);
-
-  /* ── Chart brush ───────────────────────────────────────────────────────── */
   const [brushStart, setBrushStart] = useState<number | null>(null);
   const [brushEnd, setBrushEnd] = useState<number | null>(null);
   const [selecting, setSelecting] = useState(false);
-
-  /* ── Section collapse ──────────────────────────────────────────────────── */
   const [logsOpen, setLogsOpen] = useState(true);
-
-  /* ── Log Analysis ──────────────────────────────────────────────────────── */
-  const [issueDesc, setIssueDesc] = useState("");
   const [analysisLines, setAnalysisLines] = useState<1000 | 2000>(2000);
   const [analysing, setAnalysing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<AnalyseResponse | null>(null);
   const [analysisError, setAnalysisError] = useState("");
   const [useAnalysisRange, setUseAnalysisRange] = useState(false);
+  const now = Date.now();
   const [analysisFromDate, setAnalysisFromDate] = useState(toDateStr(now - 15 * 60 * 1000));
   const [analysisFromTime, setAnalysisFromTime] = useState(toTimeStr(now - 15 * 60 * 1000));
   const [analysisToDate, setAnalysisToDate] = useState(toDateStr(now));
   const [analysisToTime, setAnalysisToTime] = useState(toTimeStr(now));
-
-  /* ── Expanded rows ─────────────────────────────────────────────────────── */
+  const [providerSwitching, setProviderSwitching] = useState(false);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   /* ════ CASCADING FILTER EFFECTS ════════════════════════════════════════ */
@@ -400,6 +392,7 @@ export default function LogViewerPage() {
       .then(setSiteOptions)
       .catch(() => setSiteOptions([]))
       .finally(() => setLoadingSites(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
 
   /* Fetch hostnames when site changes */
@@ -416,6 +409,7 @@ export default function LogViewerPage() {
       .then(setHostnameOptions)
       .catch(() => setHostnameOptions([]))
       .finally(() => setLoadingHosts(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env, selectedSite]);
 
   /* Fetch deployments when hostname changes */
@@ -430,6 +424,7 @@ export default function LogViewerPage() {
       .then(setDeploymentOptions)
       .catch(() => setDeploymentOptions([]))
       .finally(() => setLoadingDeps(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env, selectedSite, selectedHostnames]);
 
   /* ════ TIME HELPERS ═════════════════════════════════════════════════════ */
@@ -597,10 +592,12 @@ export default function LogViewerPage() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Analysis failed.";
       // Add actionable guidance based on common error patterns
-      if (msg.includes("429") || msg.includes("rate_limit") || msg.includes("too large") || msg.includes("Request too large")) {
+      if (msg.includes("too large") || msg.includes("Request too large") || msg.includes("token limits")) {
         setAnalysisError("Request too large for the AI model. Try selecting a smaller time range, fewer lines, or enable the analysis time-range filter.");
+      } else if (msg.includes("rate or quota") || msg.includes("quota") || msg.includes("rate_limit")) {
+        setAnalysisError("AI provider rate or quota limit exceeded. Try again in a moment, or switch to a different provider.");
       } else if (msg.includes("not available") || msg.includes("503")) {
-        setAnalysisError(`${msg} — Check that the AI model service (Ollama or OpenAI) is running and accessible.`);
+        setAnalysisError(`${msg} — Check that the AI model service (Ollama, OpenAI, or Gemini) is running and accessible.`);
       } else if (msg.includes("not installed") || msg.includes("pull")) {
         setAnalysisError(msg);
       } else if (msg.includes("timeout") || msg.includes("ECONNREFUSED") || msg.includes("Network Error")) {
@@ -613,6 +610,25 @@ export default function LogViewerPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredLines, env, selectedSite, selectedHostnames, selectedDeployments, issueDesc, analysisLines, useAnalysisRange, analysisFromDate, analysisFromTime, analysisToDate, analysisToTime]);
+
+  // Load AI providers once on mount
+  useEffect(() => {
+    getAIProviders()
+      .then((resp) => {
+        setProviders(resp.providers);
+        setActiveProvider(resp.active);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-fetch logs on mount if filters are persisted but heavy data was lost
+  useEffect(() => {
+    if (selectedSite && allLines.length === 0 && !loading) {
+      doFetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* count label */
   const countLabel = useMemo(() => {
@@ -627,7 +643,7 @@ export default function LogViewerPage() {
   /*  RENDER                                                               */
   /* ═══════════════════════════════════════════════════════════════════════ */
   return (
-    <div className="min-h-screen" style={{ background: PAGE_BG }}>
+    <div className="min-h-screen" style={{ background: PAGE_BG, visibility: hydrated ? "visible" : "hidden" }}>
       {/* ── FILTER BAR ───────────────────────────────────────────────────── */}
       <div
         className="flex flex-wrap items-center gap-0.5 border-b px-3 py-1.5"
@@ -1045,6 +1061,76 @@ export default function LogViewerPage() {
               2000 lines (thorough)
             </label>
           </div>
+
+          {/* ── AI Provider selector ────────────────────────────────── */}
+          {providers.length > 0 && (
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 shrink-0">AI provider:</span>
+              <div className="relative flex-1 max-w-xs">
+                <select
+                  className="w-full appearance-none rounded border bg-black/30 px-3 py-1.5 text-xs text-white outline-none focus:border-blue-500 pr-7"
+                  style={{ borderColor: BORDER }}
+                  value={activeProvider?.id ?? ""}
+                  disabled={analysing || providerSwitching}
+                  onChange={async (e) => {
+                    const newId = e.target.value;
+                    if (!newId || newId === activeProvider?.id) return;
+                    setProviderSwitching(true);
+                    try {
+                      const resp = await setAIProvider(newId);
+                      setActiveProvider(resp.active);
+                      setProviders(resp.providers);
+                    } catch {
+                      // revert selection handled by activeProvider state
+                    } finally {
+                      setProviderSwitching(false);
+                    }
+                  }}
+                >
+                  <optgroup label="Local Models (Ollama)">
+                    {providers
+                      .filter((p) => p.type === "ollama")
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}{activeProvider?.id === p.id ? " (active)" : ""}
+                        </option>
+                      ))}
+                  </optgroup>
+                  {providers.some((p) => p.type === "openai") && (
+                    <optgroup label="OpenAI">
+                      {providers
+                        .filter((p) => p.type === "openai")
+                        .map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}{activeProvider?.id === p.id ? " (active)" : ""}
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
+                  {providers.some((p) => p.type === "gemini") && (
+                    <optgroup label="Google Gemini">
+                      {providers
+                        .filter((p) => p.type === "gemini")
+                        .map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}{activeProvider?.id === p.id ? " (active)" : ""}
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
+                </select>
+                <ChevronDown
+                  size={12}
+                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-500"
+                />
+              </div>
+              {providerSwitching && (
+                <span className="text-[10px] text-sky-400">
+                  <Loader2 size={10} className="inline animate-spin" /> Switching…
+                </span>
+              )}
+            </div>
+          )}
 
           {/* ── Analysis time range filter ───────────────────────────────── */}
           <div className="space-y-2">

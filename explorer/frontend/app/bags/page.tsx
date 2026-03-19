@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { analyzeBag, fetchTimeline } from "@/lib/api";
-import type { BagLogAnalysisResponse, BagTimeline } from "@/lib/types";
+import { useBagsStore } from "@/lib/stores/bags-store";
+import { useHydrated } from "@/lib/stores/use-hydrated";
 import BagUpload from "@/components/bags/BagUpload";
 import RIOFetchPanel from "@/components/bags/RIOFetchPanel";
+import RIOUploadPanel from "@/components/bags/RIOUploadPanel";
 import LogVolumeChart from "@/components/bags/LogVolumeChart";
 import BagLogDebugger from "@/components/bags/BagLogDebugger";
 import MapDiffPanel from "@/components/bags/MapDiffPanel";
@@ -19,26 +21,32 @@ import {
   Bot,
   UploadCloud,
   CloudDownload,
+  Radio,
 } from "lucide-react";
 
 type Tab = "logs" | "mapdiff";
-type BagSource = "upload" | "rio";
+type BagSource = "upload" | "rio" | "device";
 
 export default function BagsPage() {
-  const [bagPath, setBagPath] = useState<string | null>(null);
-  const [timeline, setTimeline] = useState<BagTimeline | null>(null);
-  const [analysis, setAnalysis] = useState<BagLogAnalysisResponse | null>(null);
+  // Persisted state from store
+  const { bagPath, setBagPath, timeline, setTimeline, analysis, setAnalysis, tab, setTab, bagSource, setBagSource, resetBags } = useBagsStore();
+  const hydrated = useHydrated();
+  // Transient local state — NOT persisted
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<Tab>("logs");
-  const [bagSource, setBagSource] = useState<BagSource>("upload");
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [showRawLLM, setShowRawLLM] = useState(false);
 
+  // Re-fetch timeline on reload if bagPath is persisted but timeline was lost
+  useEffect(() => {
+    if (bagPath && !timeline) {
+      fetchTimeline(bagPath).then(setTimeline).catch(() => {});
+    }
+  }, [bagPath, timeline, setTimeline]);
+
   async function onUploaded(path: string) {
+    resetBags();
     setBagPath(path);
-    setAnalysis(null);
-    setTimeline(null);
     setError("");
     try {
       const tl = await fetchTimeline(path);
@@ -67,7 +75,7 @@ export default function BagsPage() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto animate-fade-in space-y-5">
+    <div className="p-6 max-w-6xl mx-auto animate-fade-in space-y-5" style={{ visibility: hydrated ? "visible" : "hidden" }}>
       {/* ── Header ────────────────────────────────────────── */}
       <div className="flex items-center gap-3">
         <PackageSearch size={20} className="text-blue-400" />
@@ -86,6 +94,7 @@ export default function BagsPage() {
             [
               { id: "upload", label: "Upload File", icon: UploadCloud },
               { id: "rio", label: "Fetch from RIO", icon: CloudDownload },
+              { id: "device", label: "Device Upload", icon: Radio },
             ] as { id: BagSource; label: string; icon: React.ElementType }[]
           ).map(({ id, label, icon: Icon }) => (
             <button
@@ -104,6 +113,7 @@ export default function BagsPage() {
         </div>
         {bagSource === "upload" && <BagUpload onUploaded={onUploaded} />}
         {bagSource === "rio" && <RIOFetchPanel onFetched={onUploaded} />}
+        {bagSource === "device" && <RIOUploadPanel onUploaded={() => setError("")} />}
       </section>
 
       {/* ── Collapsible Timeline ──────────────────────────── */}

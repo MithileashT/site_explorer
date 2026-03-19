@@ -9,15 +9,13 @@ import {
 } from "@/lib/api";
 import type {
   SiteMapMeta,
-  SiteMapData,
   SiteMapSpot,
-  SiteMapMarker,
   TrajectoryPoint,
 } from "@/lib/types";
 import { useOutsideClick } from "@/hooks/useOutsideClick";
 import { useBranchManager } from "@/hooks/useBranchManager";
 import { useCleanupModal } from "@/hooks/useCleanupModal";
-import SiteMapCanvas, { type Layers, type SiteMapCanvasHandle, worldToPixel } from "@/components/sitemap/SiteMapCanvas";
+import SiteMapCanvas, { type SiteMapCanvasHandle, worldToPixel } from "@/components/sitemap/SiteMapCanvas";
 import BagUploadPanel from "@/components/sitemap/BagUploadPanel";
 import PlaybackPanel from "@/components/sitemap/PlaybackPanel";
 import {
@@ -39,6 +37,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import clsx from "clsx";
+import { useSitemapStore } from "@/lib/stores/sitemap-store";
+import { useHydrated } from "@/lib/stores/use-hydrated";
 
 // ── Legend config ──────────────────────────────────────────────────────────────
 
@@ -67,21 +67,33 @@ const REGION_LEGEND = [
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function SiteMapPage() {
-  // Site state
+  const hydrated = useHydrated();
+
+  // Persisted state from Zustand store
+  const {
+    siteId, setSiteId,
+    meta, setMeta,
+    mapData, setMapData,
+    markers, setMarkers,
+    trajectory, setTrajectory,
+    trajectoryBag, setTrajectoryBag,
+    searchQuery, setSearchQuery,
+    layers, setLayers,
+    hiddenSpotTypes: hiddenSpotTypesArr, setHiddenSpotTypes: storeSetHiddenSpots,
+    hiddenRegionTypes: hiddenRegionTypesArr, setHiddenRegionTypes: storeSetHiddenRegions,
+  } = useSitemapStore();
+
+  // Convert arrays ↔ Sets at the boundary
+  const hiddenSpotTypes = useMemo(() => new Set(hiddenSpotTypesArr), [hiddenSpotTypesArr]);
+  const hiddenRegionTypes = useMemo(() => new Set(hiddenRegionTypesArr), [hiddenRegionTypesArr]);
+  const setHiddenSpotTypes = useCallback((s: Set<string>) => storeSetHiddenSpots([...s]), [storeSetHiddenSpots]);
+  const setHiddenRegionTypes = useCallback((s: Set<string>) => storeSetHiddenRegions([...s]), [storeSetHiddenRegions]);
+
+  // Transient local state
   const [sites,    setSites]    = useState<{ id: string; name: string }[]>([]);
-  const [siteId,   setSiteId]   = useState("");
-  const [meta,     setMeta]     = useState<SiteMapMeta | null>(null);
-  const [mapData,  setMapData]  = useState<SiteMapData | null>(null);
-  const [markers,  setMarkers]  = useState<SiteMapMarker[]>([]);
   const [loading,  setLoading]  = useState(false);
   const [mapErr,   setMapErr]   = useState("");
-
-  // Trajectory state (from ROS bag upload)
-  const [trajectory,    setTrajectory]    = useState<TrajectoryPoint[]>([]);
-  const [trajectoryBag, setTrajectoryBag] = useState("");
   const [trajectoryWarning, setTrajectoryWarning] = useState("");
-
-  // Playback state
   const [playbackIndex, setPlaybackIndex] = useState<number | undefined>(undefined);
   const [isPlaying,     setIsPlaying]     = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
@@ -100,16 +112,6 @@ export default function SiteMapPage() {
 
   // UI
   const [inputText,     setInputText]     = useState("");
-  const [searchQuery,   setSearchQuery]   = useState(""); // committed on click – drives canvas
-  const [layers,        setLayers]        = useState<Layers>({
-    spots:      true,
-    racks:      true,
-    regions:    true,
-    markers:    true,
-    nodes:      true,
-  });
-  const [hiddenSpotTypes,   setHiddenSpotTypes]   = useState<Set<string>>(new Set());
-  const [hiddenRegionTypes, setHiddenRegionTypes] = useState<Set<string>>(new Set());
   const [selectedSpot,      setSelectedSpot]      = useState<SiteMapSpot | null>(null);
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
 
@@ -161,8 +163,9 @@ export default function SiteMapPage() {
   useEffect(() => {
     listSiteMapSites().then(list => {
       setSites(list);
-      if (list.length > 0) setSiteId(list[0].id);
+      if (!siteId && list.length > 0) setSiteId(list[0].id);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Load site map when siteId changes ─────────────────────────────────────
@@ -300,6 +303,7 @@ export default function SiteMapPage() {
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshBranchInfo, setBranchInfo, validateTrajectoryBounds]);
 
   useEffect(() => {
@@ -309,20 +313,16 @@ export default function SiteMapPage() {
   // ── Legend type toggle helpers ─────────────────────────────────────────────
 
   const toggleSpotType = useCallback((type: string) => {
-    setHiddenSpotTypes(prev => {
-      const next = new Set(prev);
-      if (next.has(type)) { next.delete(type); } else { next.add(type); }
-      return next;
-    });
-  }, []);
+    const next = new Set(hiddenSpotTypes);
+    if (next.has(type)) { next.delete(type); } else { next.add(type); }
+    setHiddenSpotTypes(next);
+  }, [hiddenSpotTypes, setHiddenSpotTypes]);
 
   const toggleRegionType = useCallback((type: string) => {
-    setHiddenRegionTypes(prev => {
-      const next = new Set(prev);
-      if (next.has(type)) { next.delete(type); } else { next.add(type); }
-      return next;
-    });
-  }, []);
+    const next = new Set(hiddenRegionTypes);
+    if (next.has(type)) { next.delete(type); } else { next.add(type); }
+    setHiddenRegionTypes(next);
+  }, [hiddenRegionTypes, setHiddenRegionTypes]);
 
   // ── Derived data ──────────────────────────────────────────────────────────
 
@@ -436,7 +436,7 @@ export default function SiteMapPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-[#0a0f1a]">
+    <div className="flex flex-col h-screen overflow-hidden bg-[#0a0f1a]" style={{ visibility: hydrated ? "visible" : "hidden" }}>
 
       {/* ── Top bar ─────────────────────────────────────────────────────── */}
       <header className="shrink-0 flex items-center gap-3 px-4 h-12 border-b border-white/[0.07] bg-[#0d1321]/95 backdrop-blur-sm relative z-[60]">
@@ -832,7 +832,7 @@ export default function SiteMapPage() {
               ] as const).map(({ key, label, dot }) => (
                 <button
                   key={key}
-                  onClick={() => setLayers(l => ({ ...l, [key]: !l[key] }))}
+                  onClick={() => setLayers({ ...layers, [key]: !layers[key] })}
                   className={clsx(
                     "flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-medium transition-all",
                     layers[key]

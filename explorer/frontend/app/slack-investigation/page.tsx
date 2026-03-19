@@ -21,10 +21,10 @@ import {
 import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus, getAIProviders, setAIProvider } from "@/lib/api";
 import type {
   SlackThreadInvestigationRequest,
-  SlackThreadInvestigationResponse,
   SlackLLMStatusResponse,
-  AIProviderInfo,
 } from "@/lib/types";
+import { useSlackInvestigationStore } from "@/lib/stores/slack-investigation-store";
+import { useHydrated } from "@/lib/stores/use-hydrated";
 
 const headingFont = Space_Grotesk({
   subsets: ["latin"],
@@ -76,6 +76,13 @@ function CopyButton({ text, className = "" }: { text: string; className?: string
 }
 
 export default function SlackInvestigationPage() {
+  const hydrated = useHydrated();
+  const {
+    result, setResult,
+    sites, setSites,
+    providers, setProviders,
+    activeProvider, setActiveProvider,
+  } = useSlackInvestigationStore();
   const {
     register,
     handleSubmit,
@@ -93,15 +100,11 @@ export default function SlackInvestigationPage() {
 
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<SlackThreadInvestigationResponse | null>(null);
   const [showRaw, setShowRaw] = useState(false);
-  const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
   const [sitesLoading, setSitesLoading] = useState(true);
   const [sitesError, setSitesError] = useState("");
   const [llmStatus, setLlmStatus] = useState<SlackLLMStatusResponse | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>("");
-  const [providers, setProviders] = useState<AIProviderInfo[]>([]);
-  const [activeProvider, setActiveProvider] = useState<AIProviderInfo | null>(null);
   const [providerSwitching, setProviderSwitching] = useState(false);
 
   useEffect(() => {
@@ -131,6 +134,7 @@ export default function SlackInvestigationPage() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -151,6 +155,7 @@ export default function SlackInvestigationPage() {
       .catch(() => {
         // If status fails, providers endpoint already handles selection
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function onSubmit(data: SlackThreadInvestigationRequest) {
@@ -192,7 +197,7 @@ export default function SlackInvestigationPage() {
   }
 
   return (
-    <div className={`${headingFont.variable} ${bodyFont.variable} relative mx-auto max-w-[1400px] px-4 pb-20 pt-6 lg:px-8`}>
+    <div className={`${headingFont.variable} ${bodyFont.variable} relative mx-auto max-w-[1400px] px-4 pb-20 pt-6 lg:px-8`} style={{ visibility: hydrated ? "visible" : "hidden" }}>
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <div className="absolute -left-20 top-0 h-80 w-80 rounded-full bg-sky-400/15 blur-3xl" />
         <div className="absolute right-2 top-16 h-80 w-80 rounded-full bg-emerald-400/10 blur-3xl" />
@@ -358,6 +363,19 @@ export default function SlackInvestigationPage() {
                             <optgroup label="OpenAI (Custom API Key)">
                               {providers
                                 .filter((p) => p.type === "openai")
+                                .map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name}
+                                    {activeProvider?.id === p.id ? " (active)" : ""}
+                                  </option>
+                                ))}
+                            </optgroup>
+                          )}
+                          {/* Group: Gemini models */}
+                          {providers.some((p) => p.type === "gemini") && (
+                            <optgroup label="Google Gemini">
+                              {providers
+                                .filter((p) => p.type === "gemini")
                                 .map((p) => (
                                   <option key={p.id} value={p.id}>
                                     {p.name}
