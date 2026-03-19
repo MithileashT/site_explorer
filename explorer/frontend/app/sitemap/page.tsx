@@ -1083,7 +1083,7 @@ export default function SiteMapPage() {
 
             {/* Trajectory info badge */}
             {trajectory.length > 0 && (
-              <div className="absolute bottom-12 left-3 z-10 flex items-center gap-1.5 text-[10px] bg-[#0f172a]/90 border border-cyan-500/30 rounded-lg px-2.5 py-1.5 backdrop-blur-sm">
+              <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5 text-[10px] bg-[#0f172a]/90 border border-cyan-500/30 rounded-lg px-2.5 py-1.5 backdrop-blur-sm">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_6px_cyan]" />
                 <span className="text-cyan-300 font-medium">{trajectory.length.toLocaleString()} poses</span>
                 {trajectoryBag && (
@@ -1094,7 +1094,7 @@ export default function SiteMapPage() {
 
             {/* Trajectory bounds warning */}
             {trajectoryWarning && (
-              <div className="absolute bottom-12 right-3 z-10 flex items-center gap-1.5 text-[10px] bg-[#0f172a]/90 border border-amber-500/30 rounded-lg px-2.5 py-1.5 backdrop-blur-sm max-w-xs">
+              <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5 text-[10px] bg-[#0f172a]/90 border border-amber-500/30 rounded-lg px-2.5 py-1.5 backdrop-blur-sm max-w-xs">
                 <AlertTriangle size={11} className="text-amber-400 shrink-0" />
                 <span className="text-amber-300">{trajectoryWarning}</span>
               </div>
