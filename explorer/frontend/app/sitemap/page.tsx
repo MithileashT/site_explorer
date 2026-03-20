@@ -74,6 +74,7 @@ export default function SiteMapPage() {
     markers, setMarkers,
     trajectory, setTrajectory,
     trajectoryBag, setTrajectoryBag,
+    bagTimeRange, setBagTimeRange,
     searchQuery, setSearchQuery,
     layers, setLayers,
     hiddenSpotTypes: hiddenSpotTypesArr, setHiddenSpotTypes: storeSetHiddenSpots,
@@ -86,6 +87,20 @@ export default function SiteMapPage() {
   const setHiddenSpotTypes = useCallback((s: Set<string>) => storeSetHiddenSpots([...s]), [storeSetHiddenSpots]);
   const setHiddenRegionTypes = useCallback((s: Set<string>) => storeSetHiddenRegions([...s]), [storeSetHiddenRegions]);
 
+  /** Sort trajectory by timestamp and remove duplicate timestamps (defense-in-depth). */
+  const sanitizeTrajectory = useCallback((pts: TrajectoryPoint[]): TrajectoryPoint[] => {
+    if (pts.length < 2) return pts;
+    const sorted = [...pts].sort((a, b) => a.timestamp - b.timestamp);
+    // Remove duplicate timestamps (keep first occurrence)
+    const deduped: TrajectoryPoint[] = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].timestamp > deduped[deduped.length - 1].timestamp) {
+        deduped.push(sorted[i]);
+      }
+    }
+    return deduped;
+  }, []);
+
   // Transient local state
   const [sites,    setSites]    = useState<{ id: string; name: string }[]>([]);
   const [loading,  setLoading]  = useState(false);
@@ -94,18 +109,30 @@ export default function SiteMapPage() {
   const [playbackIndex, setPlaybackIndex] = useState<number | undefined>(undefined);
   const [isPlaying,     setIsPlaying]     = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  /** Elapsed seconds from bag start — updated every RAF tick for continuous timeline. */
+  const [playbackElapsed, setPlaybackElapsed] = useState(0);
   const playbackRafRef = useRef<number>(0);
   const playbackLastRef = useRef<number>(0);
+  const playbackTimeRef = useRef<number | null>(null);
+  const playbackIndexRef = useRef<number | undefined>(undefined);
 
   // Pending trajectory ref — holds trajectory data while waiting for site load
   const pendingTrajectoryRef = useRef<{
     points: TrajectoryPoint[];
     bagName: string;
+    bagTimeRange?: { start: number; end: number };
   } | null>(null);
 
-  // Keep a ref to current trajectory so loadSite can re-validate without stale closure
+  // Keep refs for values read inside the RAF tick — avoids stale closures and
+  // eliminates trajectory/speed from the playback effect's dependency list so
+  // the animation loop NEVER tears down except on play/pause transitions.
   const trajectoryRef = useRef<TrajectoryPoint[]>([]);
+  const playbackSpeedRef = useRef(1);
+  const bagTimeRangeRef = useRef<{ start: number; end: number } | null>(null);
   useEffect(() => { trajectoryRef.current = trajectory; }, [trajectory]);
+  useEffect(() => { playbackIndexRef.current = playbackIndex; }, [playbackIndex]);
+  useEffect(() => { playbackSpeedRef.current = playbackSpeed; }, [playbackSpeed]);
+  useEffect(() => { bagTimeRangeRef.current = bagTimeRange; }, [bagTimeRange]);
 
   // UI
   const [inputText,     setInputText]     = useState("");
@@ -125,26 +152,28 @@ export default function SiteMapPage() {
   const branchDropdownRef = useOutsideClick<HTMLDivElement>(showBranchDropdown, () => setShowBranchDropdown(false));
   const canvasRef         = useRef<SiteMapCanvasHandle>(null);
 
-  // Sidebar width state (resizable)
-  const [sidebarWidth, setSidebarWidth] = useState(256);
-  const sidebarResizeRef = useRef<{ startX: number; origW: number } | null>(null);
+  // Panel tab state — which icon tab is currently open (null = all closed)
+  type SidebarTab = "layers" | "info" | "legend" | null;
+  const [activeTab, setActiveTab] = useState<SidebarTab>(null);
+  const toggleTab = useCallback((tab: SidebarTab) => {
+    setActiveTab(prev => (prev === tab ? null : tab));
+  }, []);
 
-  const onSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    sidebarResizeRef.current = { startX: e.clientX, origW: sidebarWidth };
-    function onMove(ev: MouseEvent) {
-      if (!sidebarResizeRef.current) return;
-      const newW = Math.min(480, Math.max(180, sidebarResizeRef.current.origW + (ev.clientX - sidebarResizeRef.current.startX)));
-      setSidebarWidth(newW);
+  // Close active sidebar tab panel on outside click
+  const sidebarPanelRef = useOutsideClick<HTMLDivElement>(
+    activeTab !== null,
+    () => setActiveTab(null)
+  );
+
+  // Close on Escape key
+  useEffect(() => {
+    if (activeTab === null) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setActiveTab(null);
     }
-    function onUp() {
-      sidebarResizeRef.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [sidebarWidth]);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [activeTab]);
 
   // Cleanup modal state — managed by useCleanupModal hook
   const {
@@ -192,65 +221,130 @@ export default function SiteMapPage() {
 
   // ── Playback logic ──────────────────────────────────────────────────────────
 
-  // Animation loop: advance playbackIndex based on trajectory timestamps and speed
+  // Animation loop: advance a continuous playback clock and map it to trajectory
+  // indices.  The clock spans the FULL bag time range (bag_start_time → bag_end_time)
+  // so the timeline keeps progressing even when the AMR is stationary and no new
+  // pose messages exist for a time segment — the robot simply holds its last position.
+  //
+  // IMPORTANT — the effect depends ONLY on `isPlaying` so the RAF loop is never
+  // cancelled/restarted mid-playback.  Trajectory, speed, and bag time range are
+  // read from refs inside the tick function.
   useEffect(() => {
-    if (!isPlaying || trajectory.length < 2) return;
+    if (!isPlaying) return;
 
+    let cancelled = false;
     playbackLastRef.current = performance.now();
 
     const tick = (now: number) => {
-      const dt = (now - playbackLastRef.current) / 1000; // seconds elapsed
-      playbackLastRef.current = now;
+      if (cancelled) return;
 
-      setPlaybackIndex(prev => {
-        if (prev == null) return 0; // start from beginning if somehow null
-        const curTime = trajectory[prev].timestamp;
-        const advance = dt * playbackSpeed;
-        const targetTime = curTime + advance;
-
-        // Binary search for the next index matching targetTime
-        let next = prev;
-        while (next < trajectory.length - 1 && trajectory[next + 1].timestamp <= targetTime) {
-          next++;
+      try {
+        const traj = trajectoryRef.current;
+        if (traj.length < 2) {
+          playbackRafRef.current = requestAnimationFrame(tick);
+          return;
         }
 
-        if (next >= trajectory.length - 1) {
-          // Reached end — stop playing
+        const speed = playbackSpeedRef.current;
+        const range = bagTimeRangeRef.current;
+        const maxIdx = traj.length - 1;
+
+        // Authoritative time bounds — use bag time range if available,
+        // otherwise fall back to first/last trajectory timestamps.
+        const bagStart = range?.start ?? traj[0].timestamp;
+        const bagEnd   = range?.end   ?? traj[maxIdx].timestamp;
+
+        // dt in seconds since last tick, capped at 1s for tab-hidden resilience
+        const dt = Math.min(1.0, Math.max(0, (now - playbackLastRef.current) / 1000));
+        playbackLastRef.current = now;
+
+        // Initialise playback clock on first tick
+        if (playbackTimeRef.current == null || !Number.isFinite(playbackTimeRef.current)) {
+          const startIdx = Math.min(Math.max(playbackIndexRef.current ?? 0, 0), maxIdx);
+          playbackTimeRef.current = traj[startIdx].timestamp;
+        }
+
+        const curTs  = playbackTimeRef.current;
+        const nextTs = Math.min(bagEnd, Math.max(bagStart, curTs + dt * speed));
+        playbackTimeRef.current = nextTs;
+
+        // Update elapsed time for the UI (continuous, not tied to trajectory index)
+        setPlaybackElapsed(nextTs - bagStart);
+
+        // Binary search: largest trajectory index whose timestamp ≤ playback clock.
+        // When the clock is in a gap between pose messages, the index stays at the
+        // last known position — the robot holds still but the timeline keeps moving.
+        let lo = 0;
+        let hi = maxIdx;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (traj[mid].timestamp <= nextTs) lo = mid;
+          else hi = mid - 1;
+        }
+
+        setPlaybackIndex(lo);
+
+        if (nextTs >= bagEnd) {
           setIsPlaying(false);
-          return trajectory.length - 1;
+          return;
         }
-        return next;
-      });
+      } catch {
+        setIsPlaying(false);
+        return;
+      }
 
-      playbackRafRef.current = requestAnimationFrame(tick);
+      if (!cancelled) {
+        playbackRafRef.current = requestAnimationFrame(tick);
+      }
     };
 
     playbackRafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(playbackRafRef.current);
-    // playbackIndex is intentionally excluded: functional updater accesses prev value,
-    // so including it would cause the RAF loop to cancel/restart every single frame.
-  }, [isPlaying, trajectory, playbackSpeed]);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(playbackRafRef.current);
+    };
+  }, [isPlaying]);
 
   const handlePlayPause = useCallback(() => {
-    if (trajectory.length < 2) return;
+    const points = trajectoryRef.current;
+    if (points.length < 2) return;
+    const range = bagTimeRangeRef.current;
+    const bagStart = range?.start ?? points[0].timestamp;
+    const bagEnd   = range?.end   ?? points[points.length - 1].timestamp;
+
+    const idx = playbackIndexRef.current;
     if (isPlaying) {
       setIsPlaying(false);
     } else {
-      // If at the end, restart
-      if (playbackIndex == null || playbackIndex >= trajectory.length - 1) {
+      // If at the end, restart from bag start
+      if (idx == null || idx >= points.length - 1 || (playbackTimeRef.current != null && playbackTimeRef.current >= bagEnd)) {
         setPlaybackIndex(0);
+        playbackTimeRef.current = bagStart;
+        setPlaybackElapsed(0);
+      } else if (playbackTimeRef.current == null) {
+        playbackTimeRef.current = points[idx].timestamp;
+        setPlaybackElapsed(points[idx].timestamp - bagStart);
       }
       setIsPlaying(true);
     }
-  }, [isPlaying, playbackIndex, trajectory.length]);
+  }, [isPlaying]);
 
   const handlePlaybackStop = useCallback(() => {
     setIsPlaying(false);
     setPlaybackIndex(undefined);
+    playbackTimeRef.current = null;
+    setPlaybackElapsed(0);
   }, []);
 
   const handlePlaybackSeek = useCallback((index: number) => {
-    setPlaybackIndex(index);
+    const points = trajectoryRef.current;
+    if (!points.length) return;
+    const range = bagTimeRangeRef.current;
+    const bagStart = range?.start ?? points[0].timestamp;
+    const clamped = Math.max(0, Math.min(index, points.length - 1));
+    setPlaybackIndex(clamped);
+    playbackTimeRef.current = points[clamped].timestamp;
+    setPlaybackElapsed(points[clamped].timestamp - bagStart);
   }, []);
 
   const loadSite = useCallback(async (id: string) => {
@@ -285,8 +379,9 @@ export default function SiteMapPage() {
           if (!prev && !boundsWarn) return "";
           return [prev, boundsWarn].filter(Boolean).join(" ");
         });
-        setTrajectory(pending.points);
+        setTrajectory(sanitizeTrajectory(pending.points));
         setTrajectoryBag(pending.bagName);
+        if (pending.bagTimeRange) setBagTimeRange(pending.bagTimeRange);
       } else if (trajectoryRef.current.length > 0) {
         // Existing trajectory — re-validate bounds against the new site's map
         const boundsWarn = validateTrajectoryBounds(trajectoryRef.current, metaRes);
@@ -808,208 +903,245 @@ export default function SiteMapPage() {
       {/* ── Main layout ─────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* ── Left panel (resizable) ───────────────────────────────── */}
-        <aside
-          className="relative shrink-0 flex flex-col border-r border-white/[0.06] bg-[#080e1a] overflow-y-auto overflow-x-hidden"
-          style={{ width: sidebarWidth, minWidth: sidebarWidth }}
-        >
-          {/* Inner scroll container */}
-          <div className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden" style={{ width: sidebarWidth }}>
+        {/* ── Compact icon-tab rail ────────────────────────────── */}
+        <aside className="relative shrink-0 flex w-11 bg-[#080e1a] border-r border-white/[0.06] z-20">
+          <nav className="flex flex-col items-center gap-1 py-3 w-11">
+            {/* Layers tab */}
+            <button
+              onClick={() => toggleTab("layers")}
+              title="Layers"
+              className={clsx(
+                "w-8 h-8 flex items-center justify-center rounded-lg transition-all",
+                activeTab === "layers"
+                  ? "bg-blue-600/25 text-blue-400 border border-blue-500/30"
+                  : "text-slate-500 hover:text-slate-300 hover:bg-white/[0.06]"
+              )}
+            >
+              <LayersIcon size={15} />
+            </button>
 
-          {/* Layers */}
-          <div className="p-4 border-b border-white/[0.06]">
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-2.5 flex items-center gap-1.5">
-              <LayersIcon size={11} /> Layers
-            </p>
-            <div className="grid grid-cols-2 gap-1.5">
-              {([
-                { key: "spots",      label: "Spots",      dot: "#60a5fa" },
-                { key: "racks",      label: "Racks",      dot: "#fbbf24" },
-                { key: "regions",    label: "Regions",    dot: "#a78bfa" },
-                { key: "markers",    label: "AR Markers", dot: "#f87171" },
-                { key: "nodes",      label: "Nodes",      dot: "#f97316" },
-              ] as const).map(({ key, label, dot }) => (
-                <button
-                  key={key}
-                  onClick={() => setLayers({ ...layers, [key]: !layers[key] })}
-                  className={clsx(
-                    "flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-medium transition-all",
-                    layers[key]
-                      ? "bg-white/[0.07] text-slate-200 border border-white/[0.08]"
-                      : "bg-transparent text-slate-600 border border-transparent hover:text-slate-400"
-                  )}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: dot, opacity: layers[key] ? 1 : 0.3 }}
-                  />
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
+            {/* Site info tab */}
+            <button
+              onClick={() => toggleTab("info")}
+              title="Site Info"
+              className={clsx(
+                "w-8 h-8 flex items-center justify-center rounded-lg transition-all",
+                activeTab === "info"
+                  ? "bg-blue-600/25 text-blue-400 border border-blue-500/30"
+                  : "text-slate-500 hover:text-slate-300 hover:bg-white/[0.06]"
+              )}
+            >
+              <MapPin size={15} />
+            </button>
 
-          {/* Site stats */}
-          {mapData && (
-            <div className="p-4 border-b border-white/[0.06]">
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-2.5">Site Info</p>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  { icon: <MapPin size={11} />,  label: "Spots",     value: mapData.spots.length,   color: "text-blue-400"  },
-                  { icon: <Package size={11} />, label: "Racks",     value: mapData.racks.length,   color: "text-amber-400" },
-                  { icon: <Zap size={11} />,     label: "Regions",   value: mapData.regions.length, color: "text-purple-400"},
-                  { icon: <GitBranch size={11} />, label: "Nodes",   value: mapData.nodes.length,   color: "text-orange-400"},
-                  { icon: <Bot size={11} />,     label: "Robots",    value: mapData.robots.length,  color: "text-emerald-400"},
-                  { icon: <Navigation size={11} />, label: "Markers", value: markers.length,        color: "text-red-400"   },
-                ].map(({ icon, label, value, color }) => (
-                  <div key={label} className="bg-white/[0.04] rounded-lg p-2.5 border border-white/[0.05]">
-                    <span className={clsx("mb-1.5 block", color)}>{icon}</span>
-                    <p className="text-base font-bold text-slate-100 leading-none">{value}</p>
-                    <p className="text-[11px] text-slate-500 mt-1">{label}</p>
+            {/* Legend tab */}
+            <button
+              onClick={() => toggleTab("legend")}
+              title="Legend"
+              className={clsx(
+                "w-8 h-8 flex items-center justify-center rounded-lg transition-all",
+                activeTab === "legend"
+                  ? "bg-blue-600/25 text-blue-400 border border-blue-500/30"
+                  : "text-slate-500 hover:text-slate-300 hover:bg-white/[0.06]"
+              )}
+            >
+              <Zap size={15} />
+            </button>
+          </nav>
+
+          {/* Floating overlay panel — renders next to the icon rail */}
+          {activeTab !== null && (
+            <div
+              ref={sidebarPanelRef}
+              className="absolute left-full top-0 h-full z-30 flex"
+            >
+              <div className="w-64 h-full bg-[#080e1a] border-r border-white/[0.06] overflow-y-auto overflow-x-hidden shadow-2xl shadow-black/60">
+
+                {/* Panel header */}
+                <div className="sticky top-0 flex items-center justify-between px-4 py-3 border-b border-white/[0.06] bg-[#080e1a] z-10">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest">
+                    {activeTab === "layers" ? "Layers" : activeTab === "info" ? "Site Info" : "Legend"}
+                  </span>
+                  <button onClick={() => setActiveTab(null)} className="text-slate-600 hover:text-slate-300 transition-colors">
+                    <X size={12} />
+                  </button>
+                </div>
+
+                {/* ── Layers panel ──────────────────────────── */}
+                {activeTab === "layers" && (
+                  <div className="p-4">
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {([
+                        { key: "spots",   label: "Spots",      dot: "#60a5fa" },
+                        { key: "racks",   label: "Racks",      dot: "#fbbf24" },
+                        { key: "regions", label: "Regions",    dot: "#a78bfa" },
+                        { key: "markers", label: "AR Markers", dot: "#f87171" },
+                        { key: "nodes",   label: "Nodes",      dot: "#f97316" },
+                      ] as const).map(({ key, label, dot }) => (
+                        <button
+                          key={key}
+                          onClick={() => setLayers({ ...layers, [key]: !layers[key] })}
+                          className={clsx(
+                            "flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-medium transition-all",
+                            layers[key]
+                              ? "bg-white/[0.07] text-slate-200 border border-white/[0.08]"
+                              : "bg-transparent text-slate-600 border border-transparent hover:text-slate-400"
+                          )}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: dot, opacity: layers[key] ? 1 : 0.3 }}
+                          />
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                ))}
+                )}
+
+                {/* ── Site Info panel ───────────────────────── */}
+                {activeTab === "info" && (
+                  <div className="p-4">
+                    {mapData ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { icon: <MapPin size={11} />,      label: "Spots",   value: mapData.spots.length,   color: "text-blue-400"   },
+                          { icon: <Package size={11} />,     label: "Racks",   value: mapData.racks.length,   color: "text-amber-400"  },
+                          { icon: <Zap size={11} />,         label: "Regions", value: mapData.regions.length, color: "text-purple-400" },
+                          { icon: <GitBranch size={11} />,   label: "Nodes",   value: mapData.nodes.length,   color: "text-orange-400" },
+                          { icon: <Bot size={11} />,         label: "Robots",  value: mapData.robots.length,  color: "text-emerald-400"},
+                          { icon: <Navigation size={11} />,  label: "Markers", value: markers.length,         color: "text-red-400"    },
+                        ].map(({ icon, label, value, color }) => (
+                          <div key={label} className="bg-white/[0.04] rounded-lg p-2.5 border border-white/[0.05]">
+                            <span className={clsx("mb-1.5 block", color)}>{icon}</span>
+                            <p className="text-base font-bold text-slate-100 leading-none">{value}</p>
+                            <p className="text-[11px] text-slate-500 mt-1">{label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-600">No site loaded</p>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Legend panel ──────────────────────────── */}
+                {activeTab === "legend" && (
+                  <div className="p-4">
+                    {/* Spots */}
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest">Spots</p>
+                      {hiddenSpotTypes.size > 0 && (
+                        <button
+                          onClick={() => setHiddenSpotTypes(new Set())}
+                          className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
+                        >
+                          show all
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-0.5 mb-3.5">
+                      {SPOT_LEGEND.filter(({ type }) => spotTypeGroups[type] !== undefined).map(({ color, label, type }) => {
+                        const hidden = hiddenSpotTypes.has(type);
+                        return (
+                          <button
+                            key={type}
+                            onClick={() => toggleSpotType(type)}
+                            title={hidden ? `Show ${label}` : `Hide ${label}`}
+                            className={clsx(
+                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
+                              hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
+                            )}
+                          >
+                            <span className={clsx("w-2.5 h-2.5 rounded-full shrink-0", hidden && "grayscale")} style={{ backgroundColor: color }} />
+                            <span className={clsx("text-xs text-slate-400 flex-1", hidden && "line-through decoration-slate-600")}>{label}</span>
+                            <span className="text-[11px] font-mono text-slate-600">{spotTypeGroups[type]}</span>
+                          </button>
+                        );
+                      })}
+                      {Object.entries(spotTypeGroups)
+                        .filter(([t]) => !SPOT_LEGEND.find(l => l.type === t))
+                        .map(([type, count]) => {
+                          const hidden = hiddenSpotTypes.has(type);
+                          return (
+                            <button
+                              key={type}
+                              onClick={() => toggleSpotType(type)}
+                              className={clsx(
+                                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
+                                hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
+                              )}
+                            >
+                              <span className="w-2.5 h-2.5 rounded-full bg-slate-500 shrink-0" />
+                              <span className={clsx("text-xs text-slate-400 flex-1 capitalize", hidden && "line-through decoration-slate-600")}>{type.replace(/_/g, " ")}</span>
+                              <span className="text-[11px] font-mono text-slate-600">{count}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
+
+                    {/* Regions */}
+                    <div className="flex items-center justify-between mb-2 border-t border-white/[0.04] pt-3">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest">Regions</p>
+                      {hiddenRegionTypes.size > 0 && (
+                        <button
+                          onClick={() => setHiddenRegionTypes(new Set())}
+                          className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
+                        >
+                          show all
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-0.5">
+                      {REGION_LEGEND.filter(({ type }) => regionTypeGroups[type] !== undefined).map(({ color, label, type }) => {
+                        const hidden = hiddenRegionTypes.has(type);
+                        return (
+                          <button
+                            key={type}
+                            onClick={() => toggleRegionType(type)}
+                            title={hidden ? `Show ${label}` : `Hide ${label}`}
+                            className={clsx(
+                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
+                              hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
+                            )}
+                          >
+                            <span className={clsx("w-2.5 h-2.5 rounded-sm shrink-0 border border-white/10", hidden && "grayscale")} style={{ backgroundColor: color.replace(/[\d.]+\)$/, "0.8)") }} />
+                            <span className={clsx("text-xs text-slate-400 flex-1", hidden && "line-through decoration-slate-600")}>{label}</span>
+                            <span className="text-[11px] font-mono text-slate-600">{regionTypeGroups[type]}</span>
+                          </button>
+                        );
+                      })}
+                      {Object.entries(regionTypeGroups)
+                        .filter(([t]) => !REGION_LEGEND.find(l => l.type === t))
+                        .map(([type, count]) => {
+                          const hidden = hiddenRegionTypes.has(type);
+                          return (
+                            <button
+                              key={type}
+                              onClick={() => toggleRegionType(type)}
+                              className={clsx(
+                                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
+                                hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
+                              )}
+                            >
+                              <span className="w-2.5 h-2.5 rounded-sm bg-slate-600 border border-white/10 shrink-0" />
+                              <span className={clsx("text-xs text-slate-400 flex-1 capitalize", hidden && "line-through decoration-slate-600")}>{type.replace(/_/g, " ")}</span>
+                              <span className="text-[11px] font-mono text-slate-600">{count}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
-
-          {/* Legend */}
-          <div className="p-4 border-b border-white/[0.06]">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest">Legend</p>
-              <span className="text-[10px] text-slate-600">click to toggle</span>
-            </div>
-
-            {/* ── Spot types ── */}
-            <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-2">Spots</p>
-            {hiddenSpotTypes.size > 0 && (
-              <button
-                onClick={() => setHiddenSpotTypes(new Set())}
-                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors mb-1"
-              >
-                show all
-              </button>
-            )}
-            <div className="space-y-0.5 mb-3.5">
-              {SPOT_LEGEND.filter(({ type }) => spotTypeGroups[type] !== undefined).map(({ color, label, type }) => {
-                const hidden = hiddenSpotTypes.has(type);
-                return (
-                  <button
-                    key={type}
-                    onClick={() => toggleSpotType(type)}
-                    title={hidden ? `Show ${label}` : `Hide ${label}`}
-                    className={clsx(
-                      "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
-                      hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
-                    )}
-                  >
-                    <span
-                      className={clsx("w-2.5 h-2.5 rounded-full shrink-0", hidden && "grayscale")}
-                      style={{ backgroundColor: color }}
-                    />
-                    <span className={clsx("text-xs text-slate-400 flex-1", hidden && "line-through decoration-slate-600")}>
-                      {label}
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-600">{spotTypeGroups[type]}</span>
-                  </button>
-                );
-              })}
-              {Object.entries(spotTypeGroups)
-                .filter(([t]) => !SPOT_LEGEND.find(l => l.type === t))
-                .map(([type, count]) => {
-                  const hidden = hiddenSpotTypes.has(type);
-                  return (
-                    <button
-                      key={type}
-                      onClick={() => toggleSpotType(type)}
-                      className={clsx(
-                        "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
-                        hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
-                      )}
-                    >
-                      <span className="w-2.5 h-2.5 rounded-full bg-slate-500 shrink-0" />
-                      <span className={clsx("text-xs text-slate-400 flex-1 capitalize", hidden && "line-through decoration-slate-600")}>
-                        {type.replace(/_/g, " ")}
-                      </span>
-                      <span className="text-[11px] font-mono text-slate-600">{count}</span>
-                    </button>
-                  );
-                })}
-            </div>
-
-            {/* ── Region types ── */}
-            <div className="flex items-center justify-between mb-2 border-t border-white/[0.04] pt-3">
-              <p className="text-[10px] text-slate-500 uppercase tracking-widest">Regions</p>
-              {hiddenRegionTypes.size > 0 && (
-                <button
-                  onClick={() => setHiddenRegionTypes(new Set())}
-                  className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
-                >
-                  show all
-                </button>
-              )}
-            </div>
-            <div className="space-y-0.5">
-              {REGION_LEGEND.filter(({ type }) => regionTypeGroups[type] !== undefined).map(({ color, label, type }) => {
-                const hidden = hiddenRegionTypes.has(type);
-                return (
-                  <button
-                    key={type}
-                    onClick={() => toggleRegionType(type)}
-                    title={hidden ? `Show ${label}` : `Hide ${label}`}
-                    className={clsx(
-                      "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
-                      hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
-                    )}
-                  >
-                    <span
-                      className={clsx("w-2.5 h-2.5 rounded-sm shrink-0 border border-white/10", hidden && "grayscale")}
-                      style={{ backgroundColor: color.replace(/[\d.]+\)$/, "0.8)") }}
-                    />
-                    <span className={clsx("text-xs text-slate-400 flex-1", hidden && "line-through decoration-slate-600")}>
-                      {label}
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-600">{regionTypeGroups[type]}</span>
-                  </button>
-                );
-              })}
-              {Object.entries(regionTypeGroups)
-                .filter(([t]) => !REGION_LEGEND.find(l => l.type === t))
-                .map(([type, count]) => {
-                  const hidden = hiddenRegionTypes.has(type);
-                  return (
-                    <button
-                      key={type}
-                      onClick={() => toggleRegionType(type)}
-                      className={clsx(
-                        "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-all select-none",
-                        hidden ? "opacity-35 hover:opacity-60" : "hover:bg-white/[0.04]"
-                      )}
-                    >
-                      <span className="w-2.5 h-2.5 rounded-sm bg-slate-600 border border-white/10 shrink-0" />
-                      <span className={clsx("text-xs text-slate-400 flex-1 capitalize", hidden && "line-through decoration-slate-600")}>
-                        {type.replace(/_/g, " ")}
-                      </span>
-                      <span className="text-[11px] font-mono text-slate-600">{count}</span>
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
-
-          </div>
-
-          {/* Right-edge resize handle */}
-          <div
-            onMouseDown={onSidebarResizeStart}
-            className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors z-10"
-            title="Drag to resize"
-          />
         </aside>
 
         {/* ── Centre: map canvas ───────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden bg-[#0a0f1a]">
-          {/* Map area — bottom padding reserves space for the collapsed bag panel (h-10) */}
-          <div className="flex-1 relative overflow-hidden pb-10">
+          {/* Map area */}
+          <div className="flex-1 relative overflow-hidden">
             {mapErr && (
               <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
                 <div className="bg-[#0f172a]/90 border border-red-500/20 rounded-xl px-5 py-3 text-red-400 text-sm backdrop-blur-sm">
@@ -1102,28 +1234,30 @@ export default function SiteMapPage() {
               </div>
             )}
 
-            {/* Playback controls — shown when trajectory is loaded */}
-            {trajectory.length >= 2 && (
-              <div className="absolute bottom-10 left-0 right-0 z-[25]">
-                <PlaybackPanel
-                  trajectory={trajectory}
-                  playbackIndex={playbackIndex ?? 0}
-                  isPlaying={isPlaying}
-                  speed={playbackSpeed}
-                  onPlayPause={handlePlayPause}
-                  onStop={handlePlaybackStop}
-                  onSeek={handlePlaybackSeek}
-                  onSpeedChange={setPlaybackSpeed}
-                />
-              </div>
-            )}
+          </div>
 
-            {/* ROS Bag Upload Panel */}
-            <BagUploadPanel
+          {/* Playback controls — shown when trajectory is loaded */}
+          {trajectory.length >= 2 && (
+            <PlaybackPanel
+              trajectory={trajectory}
+              playbackIndex={playbackIndex ?? 0}
+              isPlaying={isPlaying}
+              speed={playbackSpeed}
+              playbackElapsed={playbackElapsed}
+              bagTimeRange={bagTimeRange}
+              onPlayPause={handlePlayPause}
+              onStop={handlePlaybackStop}
+              onSeek={handlePlaybackSeek}
+              onSpeedChange={setPlaybackSpeed}
+            />
+          )}
+
+          {/* ROS Bag Upload Panel */}
+          <BagUploadPanel
               currentSiteId={siteId}
               sites={sites}
               hasTrajectory={trajectory.length > 0}
-              onTrajectoryLoaded={(pts, bagName, trajSiteId, frameId) => {
+              onTrajectoryLoaded={(pts, bagName, trajSiteId, frameId, bagTimes) => {
                 // Build frame warning for odom-frame trajectories
                 const isOdom = frameId != null && frameId.toLowerCase().includes("odom");
                 const frameWarn = isOdom
@@ -1132,9 +1266,10 @@ export default function SiteMapPage() {
 
                 if (trajSiteId && trajSiteId !== siteId) {
                   // Site differs — queue trajectory and switch site (loadSite will apply it)
-                  pendingTrajectoryRef.current = { points: pts, bagName };
+                  pendingTrajectoryRef.current = { points: pts, bagName, bagTimeRange: bagTimes ?? undefined };
                   setTrajectory([]);
                   setTrajectoryBag("");
+                  setBagTimeRange(null);
                   setTrajectoryWarning(frameWarn);
                   setSiteId(trajSiteId);
                 } else {
@@ -1145,19 +1280,22 @@ export default function SiteMapPage() {
                     if (boundsWarn) warning = warning ? `${warning} ${boundsWarn}` : boundsWarn;
                   }
                   setTrajectoryWarning(warning);
-                  setTrajectory(pts);
+                  setTrajectory(sanitizeTrajectory(pts));
                   setTrajectoryBag(bagName);
+                  setBagTimeRange(bagTimes ?? null);
                 }
               }}
               onTrajectoryClear={() => {
                 setTrajectory([]);
                 setTrajectoryBag("");
+                setBagTimeRange(null);
                 setTrajectoryWarning("");
                 setIsPlaying(false);
                 setPlaybackIndex(undefined);
+                playbackTimeRef.current = null;
+                setPlaybackElapsed(0);
               }}
             />
-          </div>
         </main>
       </div>
 

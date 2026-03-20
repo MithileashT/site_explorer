@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { ChevronDown, ChevronUp, RotateCcw, DollarSign } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { fetchAIUsage, resetAIUsage } from "@/lib/api";
 import type { AIUsageResponse, ModuleUsage } from "@/lib/types";
 
@@ -35,7 +35,6 @@ function ModuleRow({ name, usage }: { name: string; usage: ModuleUsage }) {
 
 export default function CostDashboard() {
   const [data, setData] = useState<AIUsageResponse | null>(null);
-  const [open, setOpen] = useState(false);
   const [err, setErr] = useState(false);
 
   const load = useCallback(async () => {
@@ -48,13 +47,12 @@ export default function CostDashboard() {
     }
   }, []);
 
-  // Only fetch when panel is opened; poll every 15s while open
+  // Fetch on mount and poll every 15s
   useEffect(() => {
-    if (!open) return;
     load();
     const id = setInterval(load, 15_000);
     return () => clearInterval(id);
-  }, [open, load]);
+  }, [load]);
 
   const handleReset = async () => {
     try {
@@ -66,66 +64,52 @@ export default function CostDashboard() {
   const totalCost = data?.totals.cost_usd ?? 0;
   const totalReqs = data?.totals.request_count ?? 0;
 
+  if (err || !data) {
+    return (
+      <div className="text-[11px] text-slate-500 px-2 py-2">
+        {err ? "Cost data unavailable" : "Loading…"}
+      </div>
+    );
+  }
+
   return (
-    <div className="border-t border-[#1f2937]">
-      {/* Collapsed summary — always visible */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between px-3 py-2 text-[11px] hover:bg-white/5 transition-colors"
-      >
-        <span className="flex items-center gap-1.5 text-slate-400">
-          <DollarSign size={12} className="text-emerald-400" />
-          Session Cost
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="text-emerald-400 font-medium">
-            {err ? "—" : fmt$(totalCost)}
-          </span>
-          {open ? <ChevronDown size={12} className="text-slate-500" /> : <ChevronUp size={12} className="text-slate-500" />}
-        </span>
-      </button>
+    <div className="space-y-2 p-2">
+      {/* Totals bar */}
+      <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2.5 py-2">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-emerald-300 font-medium">Total</span>
+          <span className="text-emerald-400 font-semibold">{fmt$(totalCost)}</span>
+        </div>
+        <div className="flex items-center justify-between text-[10px] text-slate-400 mt-0.5">
+          <span>{totalReqs} request{totalReqs !== 1 ? "s" : ""}</span>
+          <span>{fmtK(data.totals.total_tokens)} tokens</span>
+        </div>
+      </div>
 
-      {/* Expanded detail */}
-      {open && data && (
-        <div className="px-3 pb-3 space-y-2">
-          {/* Totals bar */}
-          <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2.5 py-2">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="text-emerald-300 font-medium">Total</span>
-              <span className="text-emerald-400 font-semibold">{fmt$(totalCost)}</span>
-            </div>
-            <div className="flex items-center justify-between text-[10px] text-slate-400 mt-0.5">
-              <span>{totalReqs} request{totalReqs !== 1 ? "s" : ""}</span>
-              <span>{fmtK(data.totals.total_tokens)} tokens</span>
-            </div>
-          </div>
-
-          {/* Per-module breakdown */}
-          {Object.keys(data.modules).length > 0 && (
-            <div className="space-y-0.5">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">By Module</span>
-              {Object.entries(data.modules).map(([mod, usage]) => (
-                <ModuleRow key={mod} name={mod} usage={usage} />
-              ))}
-            </div>
-          )}
-
-          {/* Model + uptime + reset */}
-          <div className="flex items-center justify-between pt-1 text-[10px] text-slate-500">
-            <span className="truncate max-w-[120px]" title={`${data.active_provider}:${data.active_model}`}>
-              {data.active_model}
-            </span>
-            <span>{Math.floor(data.uptime_seconds / 60)}m uptime</span>
-          </div>
-
-          <button
-            onClick={handleReset}
-            className="w-full flex items-center justify-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 py-1 rounded hover:bg-white/5 transition-colors"
-          >
-            <RotateCcw size={10} /> Reset Session
-          </button>
+      {/* Per-module breakdown */}
+      {Object.keys(data.modules).length > 0 && (
+        <div className="space-y-0.5">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">By Module</span>
+          {Object.entries(data.modules).map(([mod, usage]) => (
+            <ModuleRow key={mod} name={mod} usage={usage} />
+          ))}
         </div>
       )}
+
+      {/* Model + uptime + reset */}
+      <div className="flex items-center justify-between pt-1 text-[10px] text-slate-500">
+        <span className="truncate max-w-[120px]" title={`${data.active_provider}:${data.active_model}`}>
+          {data.active_model}
+        </span>
+        <span>{Math.floor(data.uptime_seconds / 60)}m uptime</span>
+      </div>
+
+      <button
+        onClick={handleReset}
+        className="w-full flex items-center justify-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 py-1 rounded hover:bg-white/5 transition-colors"
+      >
+        <RotateCcw size={10} /> Reset Session
+      </button>
     </div>
   );
 }

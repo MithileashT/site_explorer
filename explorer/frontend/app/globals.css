@@ -143,3 +143,41 @@ body {
 .gauge-high   { color: var(--success); }
 .gauge-medium { color: var(--warning); }
 .gauge-low    { color: var(--danger); }
+
+/* Static sidebar rail */
+.sidebar-rail {
+  width: 56px;
+}
+
+/* Tooltip for collapsed nav items */
+.nav-tooltip {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 8px;
+  padding: 4px 10px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #f1f5f9;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 50;
+}
+
+.nav-item:hover .nav-tooltip {
+  opacity: 1;
+}
+
+/* Cost popover */
+.cost-popover {
+  position: absolute;
+  bottom: 48px;
+  left: 56px;
+  width: 240px;
+  z-index: 50;
+}
