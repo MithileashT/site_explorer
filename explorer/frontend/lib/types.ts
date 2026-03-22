@@ -130,7 +130,7 @@ export interface SlackLLMStatusResponse {
 export interface AIProviderInfo {
   id: string;
   name: string;
-  type: "ollama" | "openai";
+  type: "ollama" | "openai" | "gemini";
 }
 
 export interface AIProvidersResponse {
@@ -320,6 +320,20 @@ export interface SiteMarkers {
   markers: SiteMapMarker[];
 }
 
+/** A marker entry that includes the originating site, returned by the all-sites endpoint. */
+export interface AllSiteMarker extends SiteMapMarker {
+  /** The site this marker belongs to, e.g. "actsgm001" */
+  site_id: string;
+}
+
+export interface AllSiteMarkers {
+  markers: AllSiteMarker[];
+  /** Number of sites that had at least one marker */
+  site_count: number;
+  /** Total number of markers across all sites */
+  total: number;
+}
+
 // ──────────────────────────────────────────────
 // Git Branch Info
 // ──────────────────────────────────────────────
@@ -498,6 +512,8 @@ export interface TrajectoryResponse {
   points: TrajectoryPoint[];
   error: string | null;
   frame_id: string | null;  // "map" or "odom" — odom frame may not align with the map
+  bag_start_time: number | null;  // true bag start (Unix seconds)
+  bag_end_time: number | null;    // true bag end (Unix seconds)
 }
 
 export interface BagTopicInfo {
@@ -505,11 +521,28 @@ export interface BagTopicInfo {
   msgtype: string;
   count: number;
   is_pose: boolean;
+  is_nav: boolean;
+  nav_role: string;
+  nav_description: string;
 }
 
 export interface BagTopicsResponse {
   bag_path: string;
   topics: BagTopicInfo[];
+}
+
+export interface NavTopicStatus {
+  topic: string;
+  role: string;
+  description: string;
+  available: boolean;
+  msgtype: string;
+  count: number;
+}
+
+export interface NavTopicsResponse {
+  bag_path: string;
+  nav_topics: NavTopicStatus[];
 }
 
 // ──────────────────────────────────────────────
@@ -527,6 +560,7 @@ export interface RIOFetchResponse {
   filename: string;
   size_mb: number;
   source: "shared_url" | "device_upload";
+  extracted_bags?: string[] | null;
 }
 
 export interface RIOStatusResponse {
@@ -537,4 +571,80 @@ export interface RIOStatusResponse {
   rio_cli_available: boolean;
   organization: string;
   project: string;
+}
+
+// ──────────────────────────────────────────────
+// RIO Device Upload
+// ──────────────────────────────────────────────
+export interface RIOProject {
+  name: string;
+  guid: string;
+  organization_guid: string;
+  org_name?: string;
+}
+
+export interface RIOProjectsResponse {
+  projects: RIOProject[];
+}
+
+export interface RIODevicesRequest {
+  project_guid: string;
+}
+
+export interface RIODevicesResponse {
+  devices: string[];
+  project_guid: string;
+}
+
+export interface RIOTriggerUploadRequest {
+  project_guid: string;
+  organization_guid: string;
+  device_names: string[];
+  start_time_epoch: number;
+  end_time_epoch: number;
+  max_upload_rate_mbps?: number;
+  display_start?: string;    // e.g. "2026-03-22T10:00" (user's local TZ)
+  display_end?: string;      // e.g. "2026-03-22T11:00"
+  timezone_label?: string;   // e.g. "JST", "IST", "UTC+05:30"
+  utc_offset_minutes?: number; // e.g. 540 for JST, -300 for EST
+  site_code?: string;          // e.g. "ash-kki-001" — RIO project name
+}
+
+export interface RIODeviceUploadStatus {
+  status: "uploading" | "error";
+  message: string;
+  filename?: string | null;
+  url?: string | null;
+  request_uuid?: string | null;
+}
+
+export interface RIOTriggerUploadResponse {
+  results: Record<string, RIODeviceUploadStatus>;
+}
+
+export interface RIOUploadJobResponse {
+  job_id: string;
+}
+
+export interface RIOUploadEvent {
+  event: "link_ready" | "discovering" | "compressing" | "uploading" | "done" | "error" | "job_done";
+  device?: string;
+  message?: string;
+  url?: string;
+  filename?: string;
+  request_uuid?: string;
+}
+
+// ── RIO Discover Bags Preview ─────────────────────────────
+export interface RIODiscoverBagsRequest {
+  project_guid: string;
+  device_name: string;
+  start_time_epoch: number;
+  end_time_epoch: number;
+}
+
+export interface RIODiscoverBagsResponse {
+  device_name: string;
+  bags: string[];
+  count: number;
 }

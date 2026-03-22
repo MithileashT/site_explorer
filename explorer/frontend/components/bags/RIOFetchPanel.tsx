@@ -42,11 +42,9 @@ export default function RIOFetchPanel({ onFetched }: Props) {
 
   const canSubmit =
     status !== "fetching" &&
-    configured &&
     (mode === "url"
       ? url.trim().length > 0
-      : device.trim().length > 0 && filename.trim().length > 0) &&
-    (mode === "url" || cliAvailable);
+      : configured && cliAvailable && device.trim().length > 0 && filename.trim().length > 0);
 
   async function handleFetch() {
     if (!canSubmit) return;
@@ -65,7 +63,12 @@ export default function RIOFetchPanel({ onFetched }: Props) {
               ...(projectOverride.trim() && { project_override: projectOverride.trim() }),
             };
       const res = await fetchBagFromRIO(params);
-      setMsg(`Downloaded ${res.filename} (${res.size_mb.toFixed(1)} MB)`);
+      const extractedInfo = res.extracted_bags && res.extracted_bags.length > 1
+        ? ` (extracted ${res.extracted_bags.length} bags from archive)`
+        : res.extracted_bags
+        ? " (extracted from archive)"
+        : "";
+      setMsg(`Downloaded ${res.filename} (${res.size_mb.toFixed(1)} MB)${extractedInfo}`);
       setStatus("done");
       onFetched(res.bag_path);
     } catch (e: unknown) {
@@ -142,7 +145,7 @@ export default function RIOFetchPanel({ onFetched }: Props) {
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://gaapiserver.apps.rapyuta.io/sharedurl/…"
+          placeholder="https://api.rapyuta.io/v2/devices/fileuploads/sharedurls/… or gaapiserver URL"
           className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
           disabled={status === "fetching"}
         />

@@ -13,6 +13,7 @@ import type {
   SiteMapMeta,
   SiteMapData,
   SiteMarkers,
+  AllSiteMarkers,
   BranchInfo,
   BranchCleanupPlan,
   BranchCleanupResult,
@@ -22,11 +23,17 @@ import type {
   SlackLLMStatusResponse,
   TrajectoryResponse,
   BagTopicsResponse,
+  NavTopicsResponse,
   AIProvidersResponse,
   AIUsageResponse,
   RIOFetchRequest,
   RIOFetchResponse,
   RIOStatusResponse,
+  RIOProjectsResponse,
+  RIODevicesRequest,
+  RIODevicesResponse,
+  RIOTriggerUploadRequest,
+  RIOUploadJobResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -117,12 +124,14 @@ export async function fetchTimeline(bagPath: string, nBuckets = 60): Promise<Bag
 export async function analyzeBag(
   bagPath: string,
   windowStart?: number,
-  windowEnd?: number
+  windowEnd?: number,
+  modelOverride?: string
 ): Promise<BagLogAnalysisResponse> {
   const { data } = await http.post<BagLogAnalysisResponse>("/bags/analyze", {
     bag_path: bagPath,
     window_start: windowStart,
     window_end: windowEnd,
+    model_override: modelOverride,
   });
   return data;
 }
@@ -164,6 +173,15 @@ export async function listBagTopics(
   return data;
 }
 
+export async function listNavTopics(
+  bagPath: string
+): Promise<NavTopicsResponse> {
+  const { data } = await http.get<NavTopicsResponse>("/bags/nav-topics", {
+    params: { bag_path: bagPath },
+  });
+  return data;
+}
+
 // ── RIO Bag Fetch ─────────────────────────────────────────────────────────────
 
 export async function getRIOStatus(): Promise<RIOStatusResponse> {
@@ -174,6 +192,58 @@ export async function getRIOStatus(): Promise<RIOStatusResponse> {
 export async function fetchBagFromRIO(params: RIOFetchRequest): Promise<RIOFetchResponse> {
   const { data } = await http.post<RIOFetchResponse>("/bags/rio/fetch", params);
   return data;
+}
+
+// ── RIO Device Upload ─────────────────────────────────────────────────────────
+
+export async function getRIOProjects(): Promise<RIOProjectsResponse> {
+  const { data } = await http.get<RIOProjectsResponse>("/bags/rio/projects");
+  return data;
+}
+
+export async function getRIODevices(req: RIODevicesRequest): Promise<RIODevicesResponse> {
+  const { data } = await http.post<RIODevicesResponse>("/bags/rio/devices", req);
+  return data;
+}
+
+export async function triggerRIOUpload(req: RIOTriggerUploadRequest): Promise<RIOUploadJobResponse> {
+  const { data } = await http.post<RIOUploadJobResponse>("/bags/rio/trigger-upload", req);
+  return data;
+}
+
+export async function discoverRIOBags(req: import("./types").RIODiscoverBagsRequest): Promise<import("./types").RIODiscoverBagsResponse> {
+  const { data } = await http.post<import("./types").RIODiscoverBagsResponse>("/bags/rio/discover-bags", req);
+  return data;
+}
+
+/**
+ * Subscribe to SSE progress events for an upload job.
+ * Returns the EventSource so callers can close it.
+ */
+export function subscribeUploadStatus(
+  jobId: string,
+  onEvent: (ev: import("./types").RIOUploadEvent) => void,
+  onDone: () => void,
+  onError?: (err: Event) => void,
+): EventSource {
+  const url = `${BASE}/api/v1/bags/rio/upload-status/${encodeURIComponent(jobId)}`;
+  const es = new EventSource(url);
+  es.onmessage = (msg) => {
+    try {
+      const parsed = JSON.parse(msg.data);
+      onEvent(parsed);
+      if (parsed.event === "job_done") {
+        es.close();
+        onDone();
+      }
+    } catch { /* ignore parse errors */ }
+  };
+  es.onerror = (err) => {
+    es.close();
+    onError?.(err);
+    onDone();
+  };
+  return es;
 }
 
 // ── Investigation ─────────────────────────────────────────────────────────────
@@ -249,6 +319,11 @@ export async function getSiteMapData(siteId: string): Promise<SiteMapData> {
 
 export async function getSiteMarkers(siteId: string): Promise<SiteMarkers> {
   const { data } = await http.get<SiteMarkers>(`/sitemap/${siteId}/markers`);
+  return data;
+}
+
+export async function getAllSiteMarkers(): Promise<AllSiteMarkers> {
+  const { data } = await http.get<AllSiteMarkers>(`/sitemap/markers`);
   return data;
 }
 

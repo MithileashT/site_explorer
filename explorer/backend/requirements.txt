@@ -19,6 +19,9 @@ slack-sdk>=3.19.0
 requests>=2.31.0
 pdfplumber>=0.11.0
 python-pptx>=0.6.23
+# RIO Device SDK (direct device upload)
+rapyuta-io-cli==10.0.4
+rapyuta-io-sdk-v2==0.4.0
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
