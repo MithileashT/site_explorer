@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { useSitemapStore } from "@/lib/stores/sitemap-store";
+import { logReset } from "@/lib/stores/reset-all";
 
 // ── Legend config ──────────────────────────────────────────────────────────────
 
@@ -821,10 +822,28 @@ export default function SiteMapPage() {
           {/* ── Reset page state ────────────────────────────────────── */}
           <button
             onClick={() => {
+              logReset("sitemap");
+              // Stop playback before resetting
+              setIsPlaying(false);
+              cancelAnimationFrame(playbackRafRef.current);
+              playbackTimeRef.current = null;
+              setPlaybackIndex(undefined);
+              setPlaybackElapsed(0);
+              // Reset Zustand store (clears persisted siteId, layers, etc.)
               resetSitemap();
+              // Clear all transient local state
               setSites([]);
               setMapErr("");
               setTrajectoryWarning("");
+              setInputText("");
+              setSelectedSpot(null);
+              setShowSiteDropdown(false);
+              setShowBranchDropdown(false);
+              setShowSearchDropdown(false);
+              setSiteQuery("");
+              setActiveTab(null);
+              setBranchInfo(null);
+              pendingTrajectoryRef.current = null;
             }}
             title="Reset page state"
             className="h-7 w-7 flex items-center justify-center rounded-lg bg-white/[0.05] border border-white/[0.08] text-slate-400 hover:text-red-400 hover:bg-white/[0.08] transition-all"

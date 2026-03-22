@@ -349,6 +349,36 @@ class TestTrajectoryExtractor:
         assert POSE_TOPICS_PRIORITY[-1] == "/odom"
         assert POSE_TOPICS_PRIORITY[0] == "/amcl_pose"
 
+    def test_extract_returns_bag_time_range(self, tmp_path):
+        """extract() should return bag_start_time and bag_end_time from the bag metadata."""
+        bag = tmp_path / "bagtime.bag"
+        bag.write_bytes(b"")
+
+        poses = [(float(i), float(i)) for i in range(5)]
+        mock_reader = _make_mock_reader("/amcl_pose", poses)
+        # Bag spans 0s–300s in nanoseconds but pose messages only span 10s–14s
+        mock_reader.start_time = 0
+        mock_reader.end_time = 300_000_000_000
+        call_count = [0]
+        def fake_deserialize(rawdata, msgtype):
+            i = call_count[0] % len(poses)
+            call_count[0] += 1
+            return _make_pose_stamped(*poses[i])
+        mock_reader.deserialize = fake_deserialize
+        def messages(connections=None):
+            for idx in range(len(poses)):
+                ts_ns = (10 + idx) * 1_000_000_000
+                yield mock_reader.connections[0], ts_ns, b""
+        mock_reader.messages = messages
+
+        with patch("services.ros.trajectory_extractor.AnyReader", return_value=mock_reader):
+            extractor = TrajectoryExtractor(str(bag))
+            result = extractor.extract()
+
+        assert result["error"] is None
+        assert result["bag_start_time"] == pytest.approx(0.0)
+        assert result["bag_end_time"] == pytest.approx(300.0)
+
     def test_inf_values_are_skipped(self, tmp_path):
         bag = tmp_path / "inf.bag"
         bag.write_bytes(b"")
@@ -590,3 +620,168 @@ class TestTrajectoryEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["points"]) <= 50
+
+    def test_bag_time_range_in_response(self, tmp_path):
+        """API response should include bag_start_time and bag_end_time."""
+        bag = tmp_path / "times.bag"
+        bag.write_bytes(b"")
+
+        # Pose messages only span 5s–15s, but bag itself spans 0s–20s
+        poses = [(float(i), float(i)) for i in range(11)]
+        mock_reader = _make_mock_reader("/amcl_pose", poses)
+        # Bag-level timestamps: 0s to 20s (in nanoseconds)
+        mock_reader.start_time = 0
+        mock_reader.end_time = 20_000_000_000
+        call_count = [0]
+        def fake_deserialize(rawdata, msgtype):
+            i = call_count[0] % len(poses)
+            call_count[0] += 1
+            return _make_pose_with_cov(*poses[i])
+        mock_reader.deserialize = fake_deserialize
+        # Pose messages from 5s to 15s
+        def messages(connections=None):
+            for idx in range(len(poses)):
+                ts_ns = (5 + idx) * 1_000_000_000
+                yield mock_reader.connections[0], ts_ns, b""
+        mock_reader.messages = messages
+
+        with patch("services.ros.trajectory_extractor.AnyReader", return_value=mock_reader):
+            resp = self._client.post(
+                "/api/v1/bags/trajectory",
+                json={"bag_path": str(bag), "site_id": "test"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "bag_start_time" in data
+        assert "bag_end_time" in data
+        assert data["bag_start_time"] == pytest.approx(0.0)
+        assert data["bag_end_time"] == pytest.approx(20.0)
+
+
+# ── Unit tests: Nav topic pose extraction ────────────────────────────────────
+
+class TestNavTopicExtraction:
+    """Test _extract_pose_from_msg for the 6 fixed navigation topics."""
+
+    def test_nav_path_last_waypoint(self):
+        """nav_msgs/Path topics extract the last waypoint (PoseStamped array)."""
+        wp1 = SimpleNamespace(
+            header=SimpleNamespace(frame_id="map"),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=1.0, y=2.0, z=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            )
+        )
+        wp2 = SimpleNamespace(
+            header=SimpleNamespace(frame_id="map"),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=5.0, y=6.0, z=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            )
+        )
+        msg = SimpleNamespace(
+            header=SimpleNamespace(frame_id="map"),
+            poses=[wp1, wp2]
+        )
+        result = _extract_pose_from_msg(msg, "/move_base_flex/GlobalPlanner/plan")
+        assert result is not None
+        assert result[0] == pytest.approx(5.0)
+        assert result[1] == pytest.approx(6.0)
+
+    def test_local_plan_path(self):
+        """DWA local plan also uses nav_msgs/Path structure."""
+        wp = SimpleNamespace(
+            header=SimpleNamespace(frame_id="map"),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=3.0, y=4.0, z=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            )
+        )
+        msg = SimpleNamespace(header=SimpleNamespace(frame_id="map"), poses=[wp])
+        result = _extract_pose_from_msg(msg, "/move_base_flex/DWAPlannerROS/local_plan")
+        assert result is not None
+        assert result[0] == pytest.approx(3.0)
+        assert result[1] == pytest.approx(4.0)
+
+    def test_navigate_action_goal(self):
+        """NavigateActionGoal extracts goal.target_pose.pose."""
+        msg = SimpleNamespace(
+            goal=SimpleNamespace(
+                target_pose=SimpleNamespace(
+                    header=SimpleNamespace(frame_id="map"),
+                    pose=SimpleNamespace(
+                        position=SimpleNamespace(x=10.0, y=20.0, z=0.0),
+                        orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                    )
+                )
+            )
+        )
+        result = _extract_pose_from_msg(msg, "/move_base_flex/navigate/goal")
+        assert result is not None
+        assert result[0] == pytest.approx(10.0)
+        assert result[1] == pytest.approx(20.0)
+
+    def test_navigate_action_result(self):
+        """NavigateActionResult extracts result.pose or falls back."""
+        msg = SimpleNamespace(
+            result=SimpleNamespace(
+                pose=SimpleNamespace(
+                    position=SimpleNamespace(x=8.0, y=9.0, z=0.0),
+                    orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                )
+            )
+        )
+        result = _extract_pose_from_msg(msg, "/move_base_flex/navigate/result")
+        assert result is not None
+        assert result[0] == pytest.approx(8.0)
+        assert result[1] == pytest.approx(9.0)
+
+    def test_cmd_vel_returns_none(self):
+        """geometry_msgs/Twist (cmd_vel) has no pose data — returns None."""
+        msg = SimpleNamespace(
+            linear=SimpleNamespace(x=0.5, y=0.0, z=0.0),
+            angular=SimpleNamespace(x=0.0, y=0.0, z=0.1),
+        )
+        result = _extract_pose_from_msg(msg, "/cmd_vel")
+        assert result is None
+
+    def test_nav_topics_constant_exists(self):
+        """NAV_TOPICS_FIXED contains exactly the 6 specified topics."""
+        from services.ros.trajectory_extractor import NAV_TOPICS_FIXED
+        assert len(NAV_TOPICS_FIXED) == 6
+        topics = [nt["topic"] for nt in NAV_TOPICS_FIXED]
+        assert "/move_base_flex/navigate/goal" in topics
+        assert "/move_base_flex/GlobalPlanner/plan" in topics
+        assert "/move_base_flex/DWAPlannerROS/local_plan" in topics
+        assert "/cmd_vel" in topics
+        assert "/move_base_flex/navigate/feedback" in topics
+        assert "/move_base_flex/navigate/result" in topics
+
+    def test_list_topics_enriches_nav(self):
+        """list_topics() annotates nav topics with is_nav, nav_role, nav_description."""
+        from services.ros.trajectory_extractor import NAV_TOPICS_FIXED
+        bag_topics = ["/cmd_vel", "/move_base_flex/navigate/goal", "/camera/image"]
+        mock_reader = MagicMock()
+        mock_reader.connections = [
+            SimpleNamespace(topic=t, msgtype="std_msgs/msg/String", msgcount=10)
+            for t in bag_topics
+        ]
+        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
+        mock_reader.__exit__ = MagicMock(return_value=False)
+
+        with patch("services.ros.trajectory_extractor.AnyReader", return_value=mock_reader):
+            import tempfile, os
+            fd, tmp = tempfile.mkstemp(suffix=".bag")
+            os.close(fd)
+            try:
+                extractor = TrajectoryExtractor(tmp)
+                result = extractor.list_topics()
+            finally:
+                os.unlink(tmp)
+
+        by_topic = {t["topic"]: t for t in result}
+        assert by_topic["/cmd_vel"]["is_nav"] is True
+        assert by_topic["/cmd_vel"]["nav_role"] == "Velocity Command"
+        assert by_topic["/move_base_flex/navigate/goal"]["is_nav"] is True
+        assert by_topic["/camera/image"]["is_nav"] is False

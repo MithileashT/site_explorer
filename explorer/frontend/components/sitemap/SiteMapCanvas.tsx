@@ -424,7 +424,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
         if (matched) {
           ctx.fillStyle = "#ff1493";
         } else if (node.parkable) {
-          ctx.fillStyle = isHovered ? "#6ee7b7" : "#34d399";
+          ctx.fillStyle = isHovered ? "#e42d3c" : "#42b98d";
         } else {
           ctx.fillStyle = isHovered ? "#93c5fd" : "#60a5fa";
         }
@@ -894,46 +894,33 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
       const total = pts.length;
 
       if (total >= 2) {
-        // Build a vibrant neon gradient along the path for high visibility
+        // Build a cyan→lime gradient along the path length for the stroke
         const startPt = pts[0].px;
         const endPt   = pts[total - 1].px;
         const lineGrad = ctx.createLinearGradient(
           startPt[0], startPt[1], endPt[0], endPt[1]
         );
-        lineGrad.addColorStop(0,    "#00FFFF");  // bright cyan
-        lineGrad.addColorStop(0.35, "#FF00FF");  // magenta
-        lineGrad.addColorStop(0.65, "#FFD700");  // gold
-        lineGrad.addColorStop(1,    "#00FF88");  // neon green
-
-        // Outer glow pass — wide soft colored halo
-        ctx.beginPath();
-        pts.forEach(({ px: [px, py] }, i) => {
-          if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
-        });
-        ctx.strokeStyle = "rgba(0, 255, 255, 0.25)";
-        ctx.lineWidth   = Math.max(6, 12 / scale);
-        ctx.lineJoin    = "round";
-        ctx.lineCap     = "round";
-        ctx.stroke();
-
-        // Draw the main path line — thick and fully opaque
+        lineGrad.addColorStop(0,   "rgb(255, 0, 0)");   // pure red
+        lineGrad.addColorStop(0.5, "rgb(255, 0, 0)");   // pure red
+        lineGrad.addColorStop(1,   "rgb(255, 0, 0)");   // pure red
+        // Draw the main path line
         ctx.beginPath();
         pts.forEach(({ px: [px, py] }, i) => {
           if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
         });
         ctx.strokeStyle = lineGrad;
-        ctx.lineWidth   = Math.max(2.5, 4.5 / scale);
+        ctx.lineWidth   = Math.max(1.2, 2.5 / scale);
         ctx.lineJoin    = "round";
         ctx.lineCap     = "round";
         ctx.stroke();
 
-        // Inner bright white core for pop
+        // Thin white glow pass for depth
         ctx.beginPath();
         pts.forEach(({ px: [px, py] }, i) => {
           if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
         });
-        ctx.strokeStyle = "rgba(255,255,255,0.30)";
-        ctx.lineWidth   = Math.max(1, 1.5 / scale);
+        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+        ctx.lineWidth   = Math.max(2.5, 5 / scale);
         ctx.lineJoin    = "round";
         ctx.lineCap     = "round";
         ctx.stroke();
@@ -955,7 +942,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
           ctx.lineTo(-arrowLen * 0.2,  arrowHW);
           ctx.lineTo(-arrowLen * 0.2, -arrowHW);
           ctx.closePath();
-          ctx.fillStyle = "#00FFFF";
+          ctx.fillStyle = "rgba(255, 0, 0, 0.7)";
           ctx.fill();
           ctx.restore();
         }
@@ -966,7 +953,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
           const r        = Math.max(4, 7 / scale);
           ctx.beginPath();
           ctx.arc(sx, sy, r, 0, Math.PI * 2);
-          ctx.fillStyle   = "rgba(34, 197, 94, 0.90)";
+          ctx.fillStyle   = "rgba(47, 255, 0, 0.9)";
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth   = 1.5 / scale;
           ctx.fill();
@@ -990,7 +977,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
           const r        = Math.max(4, 7 / scale);
           ctx.beginPath();
           ctx.arc(ex, ey, r, 0, Math.PI * 2);
-          ctx.fillStyle   = "rgba(239, 68, 68, 0.90)";
+          ctx.fillStyle   = "rgba(47, 255, 0, 0.9)";
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth   = 1.5 / scale;
           ctx.fill();
@@ -1028,7 +1015,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
           ctx.lineTo(-rSize * 0.7, -rSize * 0.8);
           ctx.closePath();
           ctx.fillStyle   = "rgba(255, 255, 255, 0.92)";
-          ctx.strokeStyle = "rgba(6, 182, 212, 0.95)";
+          ctx.strokeStyle = "rgba(255, 0, 0, 0.95)";
           ctx.lineWidth   = Math.max(1, 1.8 / scale);
           ctx.fill();
           ctx.stroke();

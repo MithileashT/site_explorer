@@ -62,6 +62,17 @@ POSE_TOPICS_PRIORITY: List[str] = [
 # Topics known to publish in the odom frame (not map-aligned).
 _ODOM_FRAME_TOPICS: set[str] = {"/odom"}
 
+# ── Fixed navigation topics for trajectory analysis ──────────────────────────
+# These 6 topics represent the full AMR navigation pipeline.
+NAV_TOPICS_FIXED: List[Dict[str, str]] = [
+    {"topic": "/move_base_flex/navigate/goal", "role": "Goal", "description": "Navigation goal sent to MBF action server"},
+    {"topic": "/move_base_flex/GlobalPlanner/plan", "role": "Global Plan", "description": "Global path computed by planner"},
+    {"topic": "/move_base_flex/DWAPlannerROS/local_plan", "role": "Local Plan", "description": "Local obstacle avoidance path (DWA)"},
+    {"topic": "/cmd_vel", "role": "Velocity Command", "description": "Velocity commands sent to motors"},
+    {"topic": "/move_base_flex/navigate/feedback", "role": "Nav Feedback", "description": "Real-time navigation progress + current pose"},
+    {"topic": "/move_base_flex/navigate/result", "role": "Nav Result", "description": "Navigation action result and error code"},
+]
+
 # Minimum number of points needed to form a meaningful trajectory
 MIN_TRAJECTORY_POINTS = 2
 DEFAULT_MAX_POINTS = 4000
@@ -104,6 +115,31 @@ def _extract_pose_from_msg(msg: Any, topic: str) -> Optional[tuple[float, float,
                     yaw = _quat_to_yaw(ori.x, ori.y, ori.z, ori.w)
                     return float(pos.x), float(pos.y), yaw
 
+        # Action goal (NavigateActionGoal): goal.target_pose.pose
+        if topic == "/move_base_flex/navigate/goal":
+            goal = getattr(msg, "goal", None)
+            if goal is not None:
+                tp = getattr(goal, "target_pose", None)
+                if tp is not None:
+                    pose = getattr(tp, "pose", tp)
+                    pos = pose.position
+                    ori = pose.orientation
+                    yaw = _quat_to_yaw(ori.x, ori.y, ori.z, ori.w)
+                    return float(pos.x), float(pos.y), yaw
+
+        # Action result (NavigateActionResult): result.pose or nested
+        if topic == "/move_base_flex/navigate/result":
+            res = getattr(msg, "result", None)
+            if res is not None:
+                # Try result.pose.position (PoseStamped-like)
+                rpose = getattr(res, "pose", None)
+                if rpose is not None:
+                    pos = getattr(rpose, "position", None)
+                    ori = getattr(rpose, "orientation", None)
+                    if pos is not None and ori is not None:
+                        yaw = _quat_to_yaw(ori.x, ori.y, ori.z, ori.w)
+                        return float(pos.x), float(pos.y), yaw
+
         # LWM agent status: nav_status.mrrp_destination (Pose)
         if topic == "/lwm/agent_status":
             ns = getattr(msg, "nav_status", None)
@@ -114,6 +150,16 @@ def _extract_pose_from_msg(msg: Any, topic: str) -> Optional[tuple[float, float,
                     ori = dest.orientation
                     yaw = _quat_to_yaw(ori.x, ori.y, ori.z, ori.w)
                     return float(pos.x), float(pos.y), yaw
+
+        # nav_msgs/Path: array of PoseStamped — use last waypoint (endpoint)
+        if hasattr(msg, "poses") and hasattr(msg.poses, "__len__") and len(msg.poses) > 0:
+            first_el = msg.poses[0]
+            if hasattr(first_el, "pose") and hasattr(first_el.pose, "position"):
+                last_ps = msg.poses[-1]
+                pos = last_ps.pose.position
+                ori = last_ps.pose.orientation
+                yaw = _quat_to_yaw(ori.x, ori.y, ori.z, ori.w)
+                return float(pos.x), float(pos.y), yaw
 
         # PoseArray: use first pose in the array (edge_broadcaster/agent_poses)
         if hasattr(msg, "poses") and hasattr(msg.poses, "__len__"):
@@ -244,9 +290,19 @@ class TrajectoryExtractor:
         if not bag.exists():
             return self._error(f"Bag file not found: {self.bag_path}")
 
+        bag_start_time: Optional[float] = None
+        bag_end_time: Optional[float] = None
+
         try:
             with AnyReader([bag]) as reader:
                 available = {c.topic for c in reader.connections}
+
+                # Capture the true bag time range from all connections
+                try:
+                    bag_start_time = reader.start_time / 1_000_000_000.0
+                    bag_end_time = reader.end_time / 1_000_000_000.0
+                except Exception:
+                    pass  # not all readers expose start/end_time
 
                 # Determine which topic to read
                 if topic_override and topic_override in available:
@@ -307,6 +363,9 @@ class TrajectoryExtractor:
                 " A minimum of 2 is required to draw a trajectory."
             )
 
+        # Sort by timestamp — bag messages can arrive out of order
+        raw_points.sort(key=lambda p: p["timestamp"])
+
         # Remove outlier jumps (TF frame switches, teleportation artefacts)
         cleaned = _remove_outliers(raw_points)
         removed_outliers = total_raw - len(cleaned)
@@ -349,13 +408,21 @@ class TrajectoryExtractor:
             chosen_topic,
             frame_id or "unknown",
         )
+        # Fallback: if bag-level times are unavailable, use pose timestamps
+        if bag_start_time is None and sampled:
+            bag_start_time = sampled[0]["timestamp"]
+        if bag_end_time is None and sampled:
+            bag_end_time = sampled[-1]["timestamp"]
+
         return {
-            "points":    sampled,
-            "topic":     chosen_topic,
-            "total":     total,
-            "raw_count": total_raw,
-            "error":     None,
-            "frame_id":  frame_id or ("odom" if is_odom else "map"),
+            "points":         sampled,
+            "topic":          chosen_topic,
+            "total":          total,
+            "raw_count":      total_raw,
+            "error":          None,
+            "frame_id":       frame_id or ("odom" if is_odom else "map"),
+            "bag_start_time": bag_start_time,
+            "bag_end_time":   bag_end_time,
         }
 
     def list_topics(self) -> List[Dict[str, Any]]:
@@ -387,6 +454,18 @@ class TrajectoryExtractor:
             logger.warning("list_topics failed for %s: %s", self.bag_path, exc)
             return []
 
+        # Enrich with navigation topic metadata
+        nav_meta = {nt["topic"]: nt for nt in NAV_TOPICS_FIXED}
+        for key, info in topic_info.items():
+            if key in nav_meta:
+                info["is_nav"] = True
+                info["nav_role"] = nav_meta[key]["role"]
+                info["nav_description"] = nav_meta[key]["description"]
+            else:
+                info["is_nav"] = False
+                info["nav_role"] = ""
+                info["nav_description"] = ""
+
         # Sort: pose topics first (in priority order), then the rest alphabetically
         pose_set = set(POSE_TOPICS_PRIORITY)
         pose_keys = [t for t in POSE_TOPICS_PRIORITY if t in topic_info]
@@ -396,4 +475,4 @@ class TrajectoryExtractor:
     @staticmethod
     def _error(msg: str) -> Dict[str, Any]:
         logger.warning("TrajectoryExtractor: %s", msg)
-        return {"points": [], "topic": "", "total": 0, "raw_count": 0, "error": msg, "frame_id": None}
+        return {"points": [], "topic": "", "total": 0, "raw_count": 0, "error": msg, "frame_id": None, "bag_start_time": None, "bag_end_time": None}

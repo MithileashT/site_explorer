@@ -20,6 +20,10 @@ interface Props {
   playbackIndex: number;
   isPlaying: boolean;
   speed: number;
+  /** Continuous elapsed seconds from bag start — driven by the playback clock. */
+  playbackElapsed: number;
+  /** True bag start/end times. When null, falls back to trajectory first/last. */
+  bagTimeRange: { start: number; end: number } | null;
   onPlayPause: () => void;
   onStop: () => void;
   onSeek: (index: number) => void;
@@ -39,6 +43,8 @@ export default function PlaybackPanel({
   playbackIndex,
   isPlaying,
   speed,
+  playbackElapsed,
+  bagTimeRange,
   onPlayPause,
   onStop,
   onSeek,
@@ -55,10 +61,22 @@ export default function PlaybackPanel({
       if (!bar || total < 2) return;
       const rect = bar.getBoundingClientRect();
       const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      const idx = Math.round(frac * (total - 1));
-      onSeek(idx);
+
+      // Map fraction to absolute time, then binary-search for the closest trajectory index.
+      const t0   = bagTimeRange?.start ?? trajectory[0].timestamp;
+      const tEnd = bagTimeRange?.end   ?? trajectory[total - 1].timestamp;
+      const targetTs = t0 + frac * (tEnd - t0);
+
+      let lo = 0;
+      let hi = total - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (trajectory[mid].timestamp <= targetTs) lo = mid;
+        else hi = mid - 1;
+      }
+      onSeek(lo);
     },
-    [total, onSeek]
+    [total, trajectory, bagTimeRange, onSeek]
   );
 
   // ── Mouse handlers ──────────────────────────────────────────────────────────
@@ -117,13 +135,15 @@ export default function PlaybackPanel({
 
   if (total < 2) return null;
 
-  const t0 = trajectory[0].timestamp;
-  const tEnd = trajectory[total - 1].timestamp;
-  const duration = tEnd - t0;
-  const elapsed = playbackIndex < total
-    ? trajectory[playbackIndex].timestamp - t0
-    : duration;
-  const progress = total > 1 ? playbackIndex / (total - 1) : 0;
+  // Use bag time range as authoritative duration (covers idle periods).
+  // Falls back to trajectory first/last timestamp when bag times are unavailable.
+  const t0   = bagTimeRange?.start ?? trajectory[0].timestamp;
+  const tEnd = bagTimeRange?.end   ?? trajectory[total - 1].timestamp;
+  const duration = Math.max(0.001, tEnd - t0);
+  // Elapsed comes from the continuous playback clock, not the trajectory index.
+  const elapsed = Math.min(playbackElapsed, duration);
+  // Progress is time-based so it keeps moving even when the AMR is stationary.
+  const progress = duration > 0 ? elapsed / duration : 0;
   // Clamp thumb position so it stays fully inside the track
   const thumbPct = Math.max(0, Math.min(100, progress * 100));
 

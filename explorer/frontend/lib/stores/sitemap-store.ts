@@ -22,6 +22,8 @@ interface SitemapState {
   mapData: SiteMapData | null;
   markers: SiteMapMarker[];
   trajectory: TrajectoryPoint[];
+  /** True bag start/end (Unix seconds) — may differ from first/last pose timestamp. */
+  bagTimeRange: { start: number; end: number } | null;
 
   setSiteId: (id: string) => void;
   setMeta: (m: SiteMapMeta | null) => void;
@@ -29,6 +31,7 @@ interface SitemapState {
   setMarkers: (m: SiteMapMarker[]) => void;
   setTrajectory: (t: TrajectoryPoint[]) => void;
   setTrajectoryBag: (b: string) => void;
+  setBagTimeRange: (r: { start: number; end: number } | null) => void;
   setSearchQuery: (q: string) => void;
   setLayers: (l: Layers) => void;
   setHiddenSpotTypes: (t: string[]) => void;
@@ -42,6 +45,7 @@ const initialState = {
   mapData: null as SiteMapData | null,
   markers: [] as SiteMapMarker[],
   trajectory: [] as TrajectoryPoint[],
+  bagTimeRange: null as { start: number; end: number } | null,
   trajectoryBag: "",
   searchQuery: "",
   layers: {
@@ -66,6 +70,7 @@ export const useSitemapStore = create<SitemapState>()(
         setMarkers: (m) => set({ markers: m }),
         setTrajectory: (t) => set({ trajectory: t }),
         setTrajectoryBag: (b) => set({ trajectoryBag: b }),
+        setBagTimeRange: (r) => set({ bagTimeRange: r }),
         setSearchQuery: (q) => set({ searchQuery: q }),
         setLayers: (l) => set({ layers: l }),
         setHiddenSpotTypes: (t) => set({ hiddenSpotTypes: t }),
