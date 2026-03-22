@@ -11,7 +11,7 @@
  *      on the SiteMapCanvas
  */
 
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Upload,
   ChevronUp,
@@ -24,10 +24,12 @@ import {
   MapPin,
   Trash2,
   Radio,
+  Search,
+  GitBranch,
 } from "lucide-react";
 import clsx from "clsx";
-import { uploadBag, extractBagTrajectory, listBagTopics } from "@/lib/api";
-import type { TrajectoryPoint, BagTopicInfo } from "@/lib/types";
+import { uploadBag, extractBagTrajectory, listBagTopics, listNavTopics, getSiteBranchInfo } from "@/lib/api";
+import type { TrajectoryPoint, BagTopicInfo, NavTopicStatus, BranchInfo } from "@/lib/types";
 
 // ── Props ──────────────────────────────────────────────────────────────────────
 
@@ -37,7 +39,13 @@ interface Props {
   /** Available sites from the sitemap service. */
   sites: { id: string; name: string }[];
   /** Called after a trajectory is successfully extracted. */
-  onTrajectoryLoaded: (points: TrajectoryPoint[], bagName: string, siteId: string, frameId: string | null) => void;
+  onTrajectoryLoaded: (
+    points: TrajectoryPoint[],
+    bagName: string,
+    siteId: string,
+    frameId: string | null,
+    bagTimeRange: { start: number; end: number } | null,
+  ) => void;
   /** Called when the user explicitly clears the current trajectory. */
   onTrajectoryClear: () => void;
   /** Whether a trajectory is currently rendered on the canvas. */
@@ -70,6 +78,14 @@ export default function BagUploadPanel({
   const [selectedSiteId, setSelectedSiteId] = useState(currentSiteId);
   const [bagFile,        setBagFile]        = useState<File | null>(null);
   const [showSitePicker, setShowSitePicker] = useState(false);
+  const [sitePickerQuery, setSitePickerQuery] = useState("");
+
+  // Branch info for the selected site
+  const [siteBranchInfo, setSiteBranchInfo] = useState<BranchInfo | null>(null);
+  const [siteBranchLoading, setSiteBranchLoading] = useState(false);
+
+  // Ref for outside-click on site picker
+  const sitePickerRef = useRef<HTMLDivElement>(null);
 
   // Process state
   const [phase,   setPhase]   = useState<UploadPhase>("idle");
@@ -81,12 +97,38 @@ export default function BagUploadPanel({
   const [availableTopics, setAvailableTopics] = useState<BagTopicInfo[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
 
+  // Navigation topic status
+  const [navTopics, setNavTopics] = useState<NavTopicStatus[]>([]);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Keep selectedSiteId in sync when parent changes site during idle state
-  React.useEffect(() => {
+  useEffect(() => {
     if (phase === "idle") setSelectedSiteId(currentSiteId);
   }, [currentSiteId, phase]);
+
+  // Fetch branch info whenever siteId changes
+  useEffect(() => {
+    if (!selectedSiteId) { setSiteBranchInfo(null); return; }
+    setSiteBranchLoading(true);
+    getSiteBranchInfo(selectedSiteId)
+      .then(setSiteBranchInfo)
+      .catch(() => setSiteBranchInfo(null))
+      .finally(() => setSiteBranchLoading(false));
+  }, [selectedSiteId]);
+
+  // Close site picker on outside click
+  useEffect(() => {
+    if (!showSitePicker) return;
+    function handleOutside(e: MouseEvent) {
+      if (sitePickerRef.current && !sitePickerRef.current.contains(e.target as Node)) {
+        setShowSitePicker(false);
+        setSitePickerQuery("");
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showSitePicker]);
 
   // ── File selection ──────────────────────────────────────────────────────────
 
@@ -127,7 +169,7 @@ export default function BagUploadPanel({
 
   // ── Upload & extract ────────────────────────────────────────────────────────
 
-  const _handleTrajectoryResult = useCallback((traj: { points: TrajectoryPoint[]; topic: string; frame_id: string | null; error: string | null; raw_count?: number; total_points: number }) => {
+  const _handleTrajectoryResult = useCallback((traj: { points: TrajectoryPoint[]; topic: string; frame_id: string | null; error: string | null; raw_count?: number; total_points: number; bag_start_time?: number | null; bag_end_time?: number | null }) => {
     if (!traj.points.length) {
       setPhase("error");
       setMessage(traj.error ?? "No trajectory data found in bag.");
@@ -150,7 +192,13 @@ export default function BagUploadPanel({
       + frameWarning
       + (traj.error ? ` (⚠ ${traj.error})` : "")
     );
-    onTrajectoryLoaded(traj.points, bagFile?.name ?? "bag", selectedSiteId, traj.frame_id);
+
+    // Build bag time range from the API response
+    const bagTimes = (traj.bag_start_time != null && traj.bag_end_time != null)
+      ? { start: traj.bag_start_time, end: traj.bag_end_time }
+      : null;
+
+    onTrajectoryLoaded(traj.points, bagFile?.name ?? "bag", selectedSiteId, traj.frame_id, bagTimes);
   }, [onTrajectoryLoaded, bagFile, selectedSiteId]);
 
   const handleUpload = useCallback(async () => {
@@ -175,16 +223,30 @@ export default function BagUploadPanel({
       // Phase 2: fetch topics
       setMessage("Scanning topics…");
       try {
-        const resp = await listBagTopics(bag_path);
-        const poseTopics = resp.topics.filter(t => t.is_pose);
-        setAvailableTopics(resp.topics);
+        const [topicsResp, navResp] = await Promise.all([
+          listBagTopics(bag_path),
+          listNavTopics(bag_path),
+        ]);
+        setAvailableTopics(topicsResp.topics);
+        setNavTopics(navResp.nav_topics);
 
+        // Find available nav topics for the picker
+        const availableNav = navResp.nav_topics.filter(nt => nt.available);
+        if (availableNav.length > 0) {
+          setSelectedTopic(availableNav[0].topic);
+          setPhase("picking");
+          setProgress(55);
+          setMessage(`Found ${availableNav.length} of ${navResp.nav_topics.length} navigation topics — select one to extract.`);
+          return;
+        }
+
+        // Fallback to pose topic picker if no nav topics available
+        const poseTopics = topicsResp.topics.filter(t => t.is_pose);
         if (poseTopics.length > 1) {
-          // Multiple pose topics — show picker and wait for user selection
           setSelectedTopic(poseTopics[0].topic);
           setPhase("picking");
           setProgress(55);
-          setMessage(`Found ${poseTopics.length} pose topics — select one to extract.`);
+          setMessage(`No navigation topics found. ${poseTopics.length} pose topics available.`);
           return;
         }
       } catch {
@@ -230,6 +292,7 @@ export default function BagUploadPanel({
     setBagPath(null);
     setAvailableTopics([]);
     setSelectedTopic(null);
+    setNavTopics([]);
     setPhase("idle");
     setMessage("");
     setProgress(0);
@@ -247,7 +310,7 @@ export default function BagUploadPanel({
   return (
     <div
       className={clsx(
-        "absolute bottom-0 left-0 right-0 z-20 transition-all duration-200",
+        "shrink-0 transition-all duration-200",
         "border-t-2 bg-[#0a0f1a]",
         phase === "done"
           ? "border-emerald-500/50"
@@ -369,10 +432,13 @@ export default function BagUploadPanel({
               onChange={handleFileChange}
             />
 
-            {/* Site picker */}
-            <div className="relative">
+            {/* Site picker — searchable combobox */}
+            <div className="relative" ref={sitePickerRef}>
               <button
-                onClick={() => setShowSitePicker(v => !v)}
+                onClick={() => {
+                  setShowSitePicker(v => !v);
+                  setSitePickerQuery("");
+                }}
                 className={clsx(
                   "h-full flex items-center gap-1.5 px-3 rounded-lg border text-[13px] font-medium transition-all",
                   showSitePicker
@@ -385,28 +451,58 @@ export default function BagUploadPanel({
                 <ChevronDown size={10} className={clsx("transition-transform", showSitePicker && "rotate-180")} />
               </button>
 
-              {showSitePicker && (
-                <div className="absolute bottom-full mb-1 right-0 z-30 min-w-[180px] bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl shadow-black/70 py-1">
-                  <div className="px-3 py-1.5 text-[11px] text-[#8b949e] uppercase tracking-wider border-b border-[#30363d] mb-1 font-medium">
-                    Select site
+              {showSitePicker && (() => {
+                const q = sitePickerQuery.toLowerCase().trim();
+                const filtered = q
+                  ? sites.filter(s => s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
+                  : sites;
+                return (
+                  <div className="absolute bottom-full mb-1 right-0 z-30 w-56 bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl shadow-black/70 flex flex-col">
+                    {/* Search input */}
+                    <div className="p-2 border-b border-[#30363d]">
+                      <div className="relative">
+                        <Search size={11} className="absolute left-2 top-1.5 text-[#8b949e] pointer-events-none" />
+                        <input
+                          autoFocus
+                          type="text"
+                          placeholder="Search sites..."
+                          value={sitePickerQuery}
+                          onChange={e => setSitePickerQuery(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === "Escape") { setShowSitePicker(false); setSitePickerQuery(""); }
+                            if (e.key === "Enter" && filtered.length > 0) {
+                              setSelectedSiteId(filtered[0].id);
+                              setShowSitePicker(false);
+                              setSitePickerQuery("");
+                            }
+                          }}
+                          className="w-full h-6 pl-6 pr-2 rounded-md bg-[#0d1117] border border-[#30363d] text-[#e6edf3] placeholder-[#484f58] text-xs focus:outline-none focus:border-[#00e5ff]/50"
+                        />
+                      </div>
+                    </div>
+                    {/* Site list */}
+                    <div className="max-h-48 overflow-y-auto overscroll-contain py-1">
+                      {filtered.length === 0 ? (
+                        <p className="px-3 py-2 text-xs text-[#8b949e]">No sites match</p>
+                      ) : (
+                        filtered.map(s => (
+                          <button
+                            key={s.id}
+                            onMouseDown={() => { setSelectedSiteId(s.id); setShowSitePicker(false); setSitePickerQuery(""); }}
+                            className={clsx(
+                              "w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 hover:bg-[#00e5ff]/10 transition-colors",
+                              s.id === selectedSiteId ? "text-[#00e5ff] font-medium" : "text-[#e6edf3]"
+                            )}
+                          >
+                            <MapPin size={10} className={s.id === selectedSiteId ? "text-[#00e5ff]" : "text-[#484f58]"} />
+                            <span className="truncate">{s.id}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>
-                  <div className="max-h-48 overflow-y-auto overscroll-contain">
-                    {sites.map(s => (
-                      <button
-                        key={s.id}
-                        onClick={() => { setSelectedSiteId(s.id); setShowSitePicker(false); }}
-                        className={clsx(
-                          "w-full text-left px-3 py-2 text-[13px] flex items-center gap-2 hover:bg-[#00e5ff]/10 transition-colors",
-                          s.id === selectedSiteId ? "text-[#00e5ff] font-medium" : "text-[#e6edf3]"
-                        )}
-                      >
-                        <MapPin size={10} className={s.id === selectedSiteId ? "text-[#00e5ff]" : "text-[#484f58]"} />
-                        <span className="truncate">{s.id}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* Upload button */}
@@ -428,6 +524,37 @@ export default function BagUploadPanel({
               {busy ? (phase === "uploading" ? "Uploading" : "Extracting") : "Extract Path"}
             </button>
           </div>
+
+          {/* Branch info badge — shown once a site is selected */}
+          {selectedSiteId && (
+            <div className="flex items-center gap-2 text-[11px]">
+              <GitBranch size={11} className="text-[#8b949e] shrink-0" />
+              {siteBranchLoading ? (
+                <span className="text-[#8b949e]">Loading branch…</span>
+              ) : siteBranchInfo ? (
+                <>
+                  <span
+                    className={clsx(
+                      "px-1.5 py-0.5 rounded font-mono font-medium",
+                      siteBranchInfo.is_site_specific
+                        ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                        : "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                    )}
+                  >
+                    {siteBranchInfo.branch}
+                  </span>
+                  {!siteBranchInfo.is_site_specific && (
+                    <span className="text-amber-400/80">No dedicated branch — using main</span>
+                  )}
+                  {siteBranchInfo.is_override && (
+                    <span className="text-amber-400/80">(manual override)</span>
+                  )}
+                </>
+              ) : (
+                <span className="text-[#8b949e]">Branch unavailable</span>
+              )}
+            </div>
+          )}
 
           {/* Progress / status bar */}
           {(busy || phase === "done" || phase === "error" || phase === "picking") && (
@@ -456,8 +583,88 @@ export default function BagUploadPanel({
             </div>
           )}
 
-          {/* Topic picker — shown when multiple pose topics found */}
-          {phase === "picking" && availableTopics.filter(t => t.is_pose).length > 0 && (
+          {/* Topic picker — shown after upload when navigation topics detected */}
+          {phase === "picking" && navTopics.length > 0 && (
+            <div className="space-y-2.5 p-3 rounded-lg bg-[#161b22] border border-[#00e5ff]/30">
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] text-[#00e5ff] font-semibold uppercase tracking-wider">
+                  Select Navigation Topic
+                </div>
+                <span className="text-[10px] text-[#8b949e]">
+                  {navTopics.filter(t => t.available).length}/{navTopics.length} available
+                </span>
+              </div>
+
+              {/* Warning for cmd_vel */}
+              {selectedTopic === "/cmd_vel" && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+                  <AlertCircle size={11} />
+                  <span>/cmd_vel has velocity data only — no position for trajectory</span>
+                </div>
+              )}
+
+              <div className="space-y-1.5 max-h-52 overflow-y-auto">
+                {navTopics.map(nt => (
+                  <label
+                    key={nt.topic}
+                    className={clsx(
+                      "flex items-center gap-2.5 px-3 py-2 rounded-md transition-all text-[13px]",
+                      !nt.available
+                        ? "opacity-40 cursor-not-allowed bg-[#0d1117] border border-[#21262d]"
+                        : selectedTopic === nt.topic
+                        ? "cursor-pointer bg-[#00e5ff]/10 border border-[#00e5ff]/40 text-[#e6edf3]"
+                        : "cursor-pointer bg-[#0d1117] border border-[#30363d] text-[#c9d1d9] hover:border-[#00e5ff]/30"
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="nav-topic"
+                      value={nt.topic}
+                      checked={selectedTopic === nt.topic}
+                      onChange={() => setSelectedTopic(nt.topic)}
+                      disabled={!nt.available}
+                      className="accent-[#00e5ff] w-3.5 h-3.5"
+                    />
+                    <span className="shrink-0 text-[12px]">{nt.available ? "✅" : "❌"}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={clsx(
+                          "font-semibold text-[10px] px-1.5 py-0.5 rounded",
+                          nt.available
+                            ? "bg-[#00e5ff]/15 text-[#00e5ff]"
+                            : "bg-[#21262d] text-[#8b949e]"
+                        )}>
+                          {nt.role}
+                        </span>
+                        <span className="font-mono text-[11px] text-[#8b949e] truncate">{nt.topic}</span>
+                      </div>
+                    </div>
+                    {nt.available && nt.count > 0 && (
+                      <span className="text-[10px] text-[#8b949e] bg-[#21262d] px-1.5 py-0.5 rounded shrink-0">
+                        {nt.count.toLocaleString()} msgs
+                      </span>
+                    )}
+                  </label>
+                ))}
+              </div>
+              <button
+                onClick={handleExtractWithTopic}
+                disabled={!selectedTopic}
+                className={clsx(
+                  "w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-bold transition-all",
+                  selectedTopic
+                    ? "bg-[#00e5ff] hover:bg-[#33eaff] text-[#030b14] shadow-[0_0_10px_rgba(0,229,255,0.3)]"
+                    : "bg-[#1c2636] text-[#4a5568] cursor-not-allowed"
+                )}
+              >
+                <Route size={12} />
+                Extract with selected topic
+              </button>
+            </div>
+          )}
+
+          {/* Fallback: old pose topic picker when no nav topics found */}
+          {phase === "picking" && navTopics.length === 0 && availableTopics.filter(t => t.is_pose).length > 0 && (
             <div className="space-y-2.5 p-3 rounded-lg bg-[#161b22] border border-[#00e5ff]/30">
               <div className="text-[11px] text-[#00e5ff] font-semibold uppercase tracking-wider">
                 Select pose topic
@@ -513,13 +720,31 @@ export default function BagUploadPanel({
                 <Route size={12} />
                 <span>Trajectory visible on map</span>
               </div>
-              <button
-                onClick={handleClear}
-                className="flex items-center gap-1.5 text-[#8b949e] hover:text-red-400 transition-colors text-[12px]"
-              >
-                <Trash2 size={11} />
-                Clear
-              </button>
+              <div className="flex items-center gap-2">
+                {bagPath && navTopics.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const availableNav = navTopics.filter(nt => nt.available);
+                      if (availableNav.length > 0) {
+                        setSelectedTopic(availableNav[0].topic);
+                      }
+                      setPhase("picking");
+                      setMessage("Select a different topic to extract.");
+                    }}
+                    className="flex items-center gap-1.5 text-[#00e5ff] hover:text-[#33eaff] transition-colors text-[12px]"
+                  >
+                    <Radio size={11} />
+                    Change Topic
+                  </button>
+                )}
+                <button
+                  onClick={handleClear}
+                  className="flex items-center gap-1.5 text-[#8b949e] hover:text-red-400 transition-colors text-[12px]"
+                >
+                  <Trash2 size={11} />
+                  Clear
+                </button>
+              </div>
             </div>
           )}
         </div>

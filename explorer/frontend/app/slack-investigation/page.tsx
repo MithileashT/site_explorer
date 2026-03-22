@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Manrope, Space_Grotesk } from "next/font/google";
 import {
@@ -9,19 +9,24 @@ import {
   ChevronDown,
   Copy,
   CopyCheck,
+  GitBranch,
   Link2,
   Loader2,
+  MapPin,
   MessagesSquare,
   Radar,
+  Search,
   ShieldAlert,
   Sparkles,
   TerminalSquare,
+  X,
 } from "lucide-react";
 
-import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus, getAIProviders, setAIProvider } from "@/lib/api";
+import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus, getAIProviders, setAIProvider, getSiteBranchInfo } from "@/lib/api";
 import type {
   SlackThreadInvestigationRequest,
   SlackLLMStatusResponse,
+  BranchInfo,
 } from "@/lib/types";
 import { useSlackInvestigationStore } from "@/lib/stores/slack-investigation-store";
 
@@ -85,6 +90,8 @@ export default function SlackInvestigationPage() {
     register,
     handleSubmit,
     reset,
+    setValue,
+    watch,
     formState: { errors, isDirty },
   } = useForm<SlackThreadInvestigationRequest>({
     defaultValues: {
@@ -104,6 +111,45 @@ export default function SlackInvestigationPage() {
   const [llmStatus, setLlmStatus] = useState<SlackLLMStatusResponse | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [providerSwitching, setProviderSwitching] = useState(false);
+
+  // Searchable site combobox state
+  const [showSiteCombobox, setShowSiteCombobox] = useState(false);
+  const [siteComboboxQuery, setSiteComboboxQuery] = useState("");
+  const siteComboboxRef = useRef<HTMLDivElement>(null);
+  const watchedSiteId = watch("site_id", "");
+
+  // Branch info for selected site
+  const [siteBranchInfo, setSiteBranchInfo] = useState<BranchInfo | null>(null);
+  const [siteBranchLoading, setSiteBranchLoading] = useState(false);
+
+  // Close combobox on outside click
+  useEffect(() => {
+    if (!showSiteCombobox) return;
+    function handleOutside(e: MouseEvent) {
+      if (siteComboboxRef.current && !siteComboboxRef.current.contains(e.target as Node)) {
+        setShowSiteCombobox(false);
+        setSiteComboboxQuery("");
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showSiteCombobox]);
+
+  // Fetch branch info whenever selected site changes
+  useEffect(() => {
+    if (!watchedSiteId) { setSiteBranchInfo(null); return; }
+    setSiteBranchLoading(true);
+    getSiteBranchInfo(watchedSiteId)
+      .then(setSiteBranchInfo)
+      .catch(() => setSiteBranchInfo(null))
+      .finally(() => setSiteBranchLoading(false));
+  }, [watchedSiteId]);
+
+  // Clear stale investigation result on mount — ensures fresh state on reload/navigation
+  useEffect(() => {
+    setResult(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,36 +307,163 @@ export default function SlackInvestigationPage() {
                 </div>
 
                 <div>
-                  <div>
-                    <label className="mb-1 block text-xs text-slate-300">Site ID</label>
-                    <div className="relative">
-                      <select
-                        className="input appearance-none pr-10"
-                        disabled={sitesLoading || running}
-                        {...register("site_id")}
-                      >
-                        <option value="">
+                  <label className="mb-1 block text-xs text-slate-300">Site ID</label>
+
+                  {/* Searchable site combobox */}
+                  <div className="relative" ref={siteComboboxRef}>
+                    <button
+                      type="button"
+                      disabled={sitesLoading || running}
+                      onClick={() => {
+                        if (!sitesLoading && !running) {
+                          setShowSiteCombobox(v => !v);
+                          setSiteComboboxQuery("");
+                        }
+                      }}
+                      className="input flex w-full items-center justify-between gap-2 text-left disabled:opacity-60"
+                    >
+                      <span className="flex items-center gap-2 truncate">
+                        <MapPin size={13} className="shrink-0 text-slate-500" />
+                        <span className="truncate">
                           {sitesLoading
                             ? "Loading sites..."
+                            : watchedSiteId
+                            ? (() => {
+                                const s = sites.find(x => x.id === watchedSiteId);
+                                return s ? `${s.name} (${s.id})` : watchedSiteId;
+                              })()
                             : sites.length > 0
-                              ? "Select a site (optional)"
-                              : "No sites available"}
-                        </option>
-                        {sites.map((site) => (
-                          <option key={site.id} value={site.id}>
-                            {site.name} ({site.id})
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown
-                        size={14}
-                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
-                      />
-                    </div>
-                    {sitesError && (
-                      <p className="mt-1 text-xs text-amber-200">Unable to refresh sites: {sitesError}</p>
-                    )}
+                            ? "Select a site (optional)"
+                            : "No sites available"}
+                        </span>
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0">
+                        {watchedSiteId && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setValue("site_id", "");
+                              setSiteBranchInfo(null);
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.stopPropagation();
+                                setValue("site_id", "");
+                                setSiteBranchInfo(null);
+                              }
+                            }}
+                            className="cursor-pointer rounded p-0.5 text-slate-500 hover:text-slate-300"
+                          >
+                            <X size={12} />
+                          </span>
+                        )}
+                        <ChevronDown
+                          size={14}
+                          className={`text-slate-500 transition-transform ${showSiteCombobox ? "rotate-180" : ""}`}
+                        />
+                      </span>
+                    </button>
+
+                    {/* Hidden input so react-hook-form still registers site_id */}
+                    <input type="hidden" {...register("site_id")} />
+
+                    {showSiteCombobox && (() => {
+                      const q = siteComboboxQuery.toLowerCase().trim();
+                      const filtered = q
+                        ? sites.filter(s =>
+                            s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+                          )
+                        : sites;
+                      return (
+                        <div className="absolute left-0 top-full z-50 mt-1 w-full rounded-xl border border-white/[0.1] bg-[#0f172a] shadow-2xl shadow-black/50">
+                          <div className="border-b border-white/[0.06] p-2">
+                            <div className="relative">
+                              <Search size={12} className="absolute left-2 top-1.5 text-slate-500 pointer-events-none" />
+                              <input
+                                autoFocus
+                                type="text"
+                                placeholder="Search sites..."
+                                value={siteComboboxQuery}
+                                onChange={e => setSiteComboboxQuery(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === "Escape") { setShowSiteCombobox(false); setSiteComboboxQuery(""); }
+                                  if (e.key === "Enter" && filtered.length > 0) {
+                                    setValue("site_id", filtered[0].id);
+                                    setShowSiteCombobox(false);
+                                    setSiteComboboxQuery("");
+                                  }
+                                }}
+                                className="w-full h-6 rounded-md bg-white/[0.06] border border-white/[0.08] pl-6 pr-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500/60"
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-52 overflow-y-auto py-1">
+                            {filtered.length === 0 ? (
+                              <p className="px-3 py-2 text-xs text-slate-500">No sites match</p>
+                            ) : (
+                              filtered.map(s => (
+                                <button
+                                  key={s.id}
+                                  type="button"
+                                  onMouseDown={() => {
+                                    setValue("site_id", s.id);
+                                    setShowSiteCombobox(false);
+                                    setSiteComboboxQuery("");
+                                  }}
+                                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.05] ${
+                                    watchedSiteId === s.id ? "text-sky-400" : "text-slate-300"
+                                  }`}
+                                >
+                                  <MapPin
+                                    size={10}
+                                    className={watchedSiteId === s.id ? "text-sky-400 shrink-0" : "text-slate-600 shrink-0"}
+                                  />
+                                  <span className="flex-1 truncate">{s.name}</span>
+                                  <span className="font-mono text-[10px] text-slate-500">{s.id}</span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
+
+                  {/* Branch info for selected site */}
+                  {watchedSiteId && (
+                    <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
+                      <GitBranch size={11} className="shrink-0 text-slate-500" />
+                      {siteBranchLoading ? (
+                        <span className="text-slate-500">Loading branch…</span>
+                      ) : siteBranchInfo ? (
+                        <>
+                          <span
+                            className={`rounded px-1.5 py-0.5 font-mono font-medium ${
+                              siteBranchInfo.is_site_specific
+                                ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                                : "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                            }`}
+                          >
+                            {siteBranchInfo.branch}
+                          </span>
+                          {!siteBranchInfo.is_site_specific && (
+                            <span className="text-amber-400/80">No dedicated branch — serving from main</span>
+                          )}
+                          {siteBranchInfo.is_override && (
+                            <span className="text-amber-400/80">(manual override)</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-slate-500">Branch info unavailable</span>
+                      )}
+                    </div>
+                  )}
+
+                  {sitesError && (
+                    <p className="mt-1 text-xs text-amber-200">Unable to refresh sites: {sitesError}</p>
+                  )}
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
