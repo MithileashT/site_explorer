@@ -21,6 +21,7 @@ import {
   UploadCloud,
   CloudDownload,
   Radio,
+  RefreshCw,
 } from "lucide-react";
 
 type Tab = "logs" | "mapdiff";
@@ -83,6 +84,18 @@ export default function BagsPage() {
             Upload a ROS bag, explore logs with timeline, run AI analysis
           </p>
         </div>
+        <button
+          onClick={() => {
+            resetBags();
+            setError("");
+            setAnalyzing(false);
+          }}
+          title="Reset page"
+          className="ml-auto flex items-center gap-1.5 rounded-lg bg-white/[0.05] border border-white/[0.08] px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-white/[0.08] transition-all"
+        >
+          <RefreshCw size={12} />
+          Reset
+        </button>
       </div>
 
       {/* ── Bag Source (Upload / RIO) ─────────────────────── */}

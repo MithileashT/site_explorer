@@ -15,6 +15,7 @@ import type {
 import { useOutsideClick } from "@/hooks/useOutsideClick";
 import { useBranchManager } from "@/hooks/useBranchManager";
 import { useCleanupModal } from "@/hooks/useCleanupModal";
+import { useSiteSearch } from "@/hooks/useSiteSearch";
 import SiteMapCanvas, { type SiteMapCanvasHandle, worldToPixel } from "@/components/sitemap/SiteMapCanvas";
 import BagUploadPanel from "@/components/sitemap/BagUploadPanel";
 import PlaybackPanel from "@/components/sitemap/PlaybackPanel";
@@ -79,6 +80,7 @@ export default function SiteMapPage() {
     layers, setLayers,
     hiddenSpotTypes: hiddenSpotTypesArr, setHiddenSpotTypes: storeSetHiddenSpots,
     hiddenRegionTypes: hiddenRegionTypesArr, setHiddenRegionTypes: storeSetHiddenRegions,
+    resetSitemap,
   } = useSitemapStore();
 
   // Convert arrays ↔ Sets at the boundary
@@ -141,6 +143,7 @@ export default function SiteMapPage() {
 
   // Site selector dropdown
   const [showSiteDropdown, setShowSiteDropdown] = useState(false);
+  const { query: siteQuery, setQuery: setSiteQuery, filtered: filteredSites } = useSiteSearch(sites);
 
   // Branch state — managed by useBranchManager; dropdown visibility stays local
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
@@ -442,7 +445,7 @@ export default function SiteMapPage() {
     const results: {
       label: string;
       sub: string;
-      category: "spot" | "rack" | "region" | "node";
+      category: "spot" | "rack" | "region" | "node" | "marker";
       pixX: number;
       pixY: number;
       score: number;
@@ -513,6 +516,29 @@ export default function SiteMapPage() {
           });
         }
       });
+
+      // AR Markers — match by numeric id, "marker <id>", or "ar <id>"
+      markers.forEach(m => {
+        const idStr    = String(m.id);
+        const markerToken = `marker ${m.id}`;
+        const arToken  = `ar ${m.id}`;
+        if (
+          idStr.includes(q) ||
+          markerToken.includes(q) ||
+          arToken.includes(q) ||
+          q === "marker" || q === "ar"
+        ) {
+          const [px, py] = w2p(m.x, m.y);
+          results.push({
+            label: `AR ${m.id}`,
+            sub: `Marker ${m.id} · (${m.x.toFixed(2)}, ${m.y.toFixed(2)})`,
+            category: "marker",
+            pixX: px,
+            pixY: py,
+            score: score(idStr),
+          });
+        }
+      });
     }
 
     // Deduplicate by label, sort by score (exact first), no hard cap
@@ -525,7 +551,7 @@ export default function SiteMapPage() {
         return true;
       })
       .sort((a, b) => b.score - a.score);
-  }, [inputText, mapData, meta]);
+  }, [inputText, mapData, meta, markers]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -550,7 +576,7 @@ export default function SiteMapPage() {
               <Search size={12} className="absolute left-2.5 top-2 text-slate-500 pointer-events-none" />
               <input
                 type="text"
-                placeholder="Search spots, racks, regions, nodes..."
+                placeholder="Search spots, racks, regions, nodes, markers..."
                 value={inputText}
                 onChange={e => {
                   const val = e.target.value;
@@ -608,6 +634,7 @@ export default function SiteMapPage() {
                           : s.category === "rack"   ? "bg-slate-500/15 text-slate-400"
                           : s.category === "region" ? "bg-purple-500/15 text-purple-400"
                           : s.category === "node"   ? "bg-orange-500/15 text-orange-400"
+                          : s.category === "marker" ? "bg-red-500/15 text-red-400"
                           : "bg-amber-500/15 text-amber-400",
                       )}>
                         {s.category}
@@ -623,37 +650,64 @@ export default function SiteMapPage() {
             )}
           </div>
 
-          {/* Site selector */}
+          {/* Site selector — searchable combobox */}
           <div className="relative" ref={siteDropdownRef}>
-            <button
-              onClick={() => setShowSiteDropdown(v => !v)}
+            <div
               className={clsx(
-                "h-7 flex items-center gap-1.5 pl-2.5 pr-2 rounded-lg border text-xs font-medium transition-all",
+                "h-7 flex items-center gap-1.5 pl-2.5 pr-2 rounded-lg border text-xs font-medium transition-all cursor-pointer",
                 showSiteDropdown
                   ? "bg-blue-500/15 border-blue-500/40 text-blue-300"
                   : "bg-white/[0.05] border-white/[0.08] text-slate-300 hover:bg-white/[0.08] hover:border-white/[0.14] hover:text-slate-100"
               )}
+              onClick={() => {
+                setShowSiteDropdown(v => !v);
+                setSiteQuery("");
+              }}
             >
               <MapPin size={11} className={showSiteDropdown ? "text-blue-400" : "text-slate-500"} />
               <span className="max-w-[110px] truncate">{siteId || "Select site"}</span>
               <ChevronDown size={10} className={clsx("transition-transform", showSiteDropdown && "rotate-180")} />
-            </button>
+            </div>
 
             {showSiteDropdown && (
-              <div className="absolute top-full mt-1.5 left-0 z-50 min-w-[180px] bg-[#0f172a] border border-white/[0.1] rounded-xl shadow-2xl shadow-black/50 py-1">
-                <div className="px-3 py-1.5 text-[10px] text-slate-500 uppercase tracking-wider border-b border-white/[0.06] mb-1">
-                  Sites
+              <div className="absolute top-full mt-1.5 left-0 z-50 w-56 bg-[#0f172a] border border-white/[0.1] rounded-xl shadow-2xl shadow-black/50 flex flex-col">
+                {/* Search input */}
+                <div className="p-2 border-b border-white/[0.06]">
+                  <div className="relative">
+                    <Search size={11} className="absolute left-2 top-1.5 text-slate-500 pointer-events-none" />
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder="Search sites..."
+                      value={siteQuery}
+                      onChange={e => setSiteQuery(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Escape") { setShowSiteDropdown(false); setSiteQuery(""); }
+                        if (e.key === "Enter" && filteredSites.length > 0) {
+                          setSiteId(filteredSites[0].id);
+                          setShowSiteDropdown(false);
+                          setSiteQuery("");
+                          setInputText("");
+                          setSearchQuery("");
+                          setShowSearchDropdown(false);
+                        }
+                      }}
+                      className="w-full h-6 pl-6 pr-2 rounded-md bg-white/[0.06] border border-white/[0.08] text-slate-200 placeholder-slate-600 text-xs focus:outline-none focus:border-blue-500/60"
+                    />
+                  </div>
                 </div>
-                <div className="max-h-64 overflow-y-auto overscroll-contain">
-                  {sites.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-slate-500">No sites available</p>
+                {/* Site list */}
+                <div className="max-h-60 overflow-y-auto overscroll-contain py-1">
+                  {filteredSites.length === 0 ? (
+                    <p className="px-3 py-2 text-xs text-slate-500">No sites match</p>
                   ) : (
-                    sites.map(s => (
+                    filteredSites.map(s => (
                       <button
                         key={s.id}
                         onMouseDown={() => {
                           setSiteId(s.id);
                           setShowSiteDropdown(false);
+                          setSiteQuery("");
                           setInputText("");
                           setSearchQuery("");
                           setShowSearchDropdown(false);
@@ -702,6 +756,14 @@ export default function SiteMapPage() {
                 <GitBranch size={10} />
                 <span>{branchInfo.branch}</span>
                 {branchInfo.is_override && <span className="text-amber-400 text-[10px]">*</span>}
+                {!branchInfo.is_site_specific && !branchInfo.is_override && (
+                  <span
+                    title="This site has no dedicated branch — data is served from main"
+                    className="text-amber-400 text-[9px] font-sans font-medium bg-amber-400/10 rounded px-1"
+                  >
+                    fallback
+                  </span>
+                )}
                 <ChevronDown size={10} />
               </button>
 
@@ -710,6 +772,12 @@ export default function SiteMapPage() {
                   <div className="px-3 py-1.5 text-[10px] text-slate-500 uppercase tracking-wider border-b border-white/[0.06] mb-1">
                     Branch — {siteId}
                   </div>
+                  {!branchInfo.is_site_specific && !branchInfo.is_override && (
+                    <div className="mx-3 mb-2 px-2 py-1.5 rounded-lg bg-amber-400/10 border border-amber-400/20 text-amber-300 text-[10px]">
+                      No site-specific branch found. Serving data from{" "}
+                      <code className="bg-white/10 px-1 rounded">main</code>.
+                    </div>
+                  )}
                   <div className="max-h-64 overflow-y-auto overscroll-contain">
                     {branchInfo.available_branches.map(b => (
                       <button
@@ -749,6 +817,20 @@ export default function SiteMapPage() {
               )}
             </div>
           )}
+
+          {/* ── Reset page state ────────────────────────────────────── */}
+          <button
+            onClick={() => {
+              resetSitemap();
+              setSites([]);
+              setMapErr("");
+              setTrajectoryWarning("");
+            }}
+            title="Reset page state"
+            className="h-7 w-7 flex items-center justify-center rounded-lg bg-white/[0.05] border border-white/[0.08] text-slate-400 hover:text-red-400 hover:bg-white/[0.08] transition-all"
+          >
+            <Trash2 size={12} />
+          </button>
 
           {/* ── Sync button ───────────────────────────────────────────── */}
           <button

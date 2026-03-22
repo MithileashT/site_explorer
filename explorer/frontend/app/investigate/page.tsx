@@ -351,6 +351,7 @@ export default function LogViewerPage() {
     analysisResult, setAnalysisResult,
     providers, setProviders,
     activeProvider, setActiveProvider,
+    resetInvestigate,
   } = useInvestigateStore();
 
   /* ── Transient local state ─────────────────────────────────────────────── */
@@ -619,17 +620,6 @@ export default function LogViewerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-fetch logs when selectedSite becomes available (covers both client-nav
-  // and page reload where Zustand hydrates from sessionStorage asynchronously)
-  const autoFetchedRef = useRef(false);
-  useEffect(() => {
-    if (!autoFetchedRef.current && selectedSite && allLines.length === 0 && !loading) {
-      autoFetchedRef.current = true;
-      doFetch();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSite]);
-
   /* count label */
   const countLabel = useMemo(() => {
     const showing = filteredLines.length;
@@ -727,6 +717,20 @@ export default function LogViewerPage() {
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
           Run query
+        </button>
+        <button
+          onClick={() => {
+            resetInvestigate();
+            setFetchError("");
+            setLoading(false);
+            setAnalysing(false);
+            setAnalysisError("");
+          }}
+          title="Reset all filters and results"
+          className="flex items-center gap-1.5 rounded bg-white/[0.05] border border-white/[0.08] px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200 hover:bg-white/[0.08] transition-colors"
+        >
+          <RotateCcw size={12} />
+          Reset
         </button>
       </div>
 

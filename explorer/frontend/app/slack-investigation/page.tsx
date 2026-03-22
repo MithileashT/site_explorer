@@ -85,6 +85,7 @@ export default function SlackInvestigationPage() {
     sites, setSites,
     providers, setProviders,
     activeProvider, setActiveProvider,
+    resetSlackInvestigation,
   } = useSlackInvestigationStore();
   const {
     register,
@@ -144,12 +145,6 @@ export default function SlackInvestigationPage() {
       .catch(() => setSiteBranchInfo(null))
       .finally(() => setSiteBranchLoading(false));
   }, [watchedSiteId]);
-
-  // Clear stale investigation result on mount — ensures fresh state on reload/navigation
-  useEffect(() => {
-    setResult(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,9 +230,10 @@ export default function SlackInvestigationPage() {
 
   function resetAll() {
     reset();
-    setResult(null);
+    resetSlackInvestigation();
     setError("");
     setShowRaw(false);
+    setSiteBranchInfo(null);
   }
 
   return (
