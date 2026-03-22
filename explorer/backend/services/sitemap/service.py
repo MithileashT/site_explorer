@@ -520,3 +520,47 @@ class SiteMapService:
         except Exception as e:
             logger.error("get_markers(%s): %s", site_id, e)
             return {"markers": []}
+
+    def get_all_markers(self) -> Dict[str, Any]:
+        """
+        Return AR marker poses for every known site, each entry annotated
+        with ``site_id``.
+
+        Iterates over :py:meth:`list_sites` and calls :py:meth:`get_markers`
+        for each site, then aggregates the results.  Sites without a
+        ``markers.yaml`` (or with an empty one) are silently skipped so the
+        response always contains only valid entries.
+
+        Returns::
+
+            {
+              "markers": [
+                {"site_id": "actsgm001", "id": 0, "x": 2.2, "y": 0.67, "z": 0.0, "yaw": 0.0},
+                ...
+              ],
+              "site_count": 12,
+              "total": 250
+            }
+        """
+        sites = self.list_sites()
+        aggregated: List[Dict[str, Any]] = []
+        sites_with_markers = 0
+
+        for site in sites:
+            sid = site["id"] if isinstance(site, dict) else str(site)
+            per_site = self.get_markers(sid)
+            site_markers = per_site.get("markers", [])
+            if site_markers:
+                sites_with_markers += 1
+                for m in site_markers:
+                    aggregated.append({**m, "site_id": sid})
+
+        logger.info(
+            "get_all_markers: %d markers from %d/%d sites",
+            len(aggregated), sites_with_markers, len(sites),
+        )
+        return {
+            "markers": aggregated,
+            "site_count": sites_with_markers,
+            "total": len(aggregated),
+        }

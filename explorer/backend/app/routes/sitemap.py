@@ -184,6 +184,23 @@ def list_sites():
     return _get_svc().list_sites()
 
 
+@router.get("/markers")
+def get_all_markers():
+    """
+    Return AR marker poses for **all** sites, each entry annotated with
+    ``site_id``.  Sites without ``markers.yaml`` are silently skipped.
+
+    Response shape::
+
+        {
+          "markers": [{"site_id": "actsgm001", "id": 0, "x": 2.2, ...}, ...],
+          "site_count": 12,
+          "total": 250
+        }
+    """
+    return _get_svc().get_all_markers()
+
+
 @router.get("/{site_id}/map")
 def get_site_map(site_id: str, dark_mode: bool = Query(True)):
     """
