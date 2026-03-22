@@ -12,9 +12,11 @@ import {
   Warehouse,
   MessagesSquare,
   DollarSign,
+  RotateCcw,
 } from "lucide-react";
 import clsx from "clsx";
 import CostDashboard from "@/components/dashboard/CostDashboard";
+import { resetAllStores } from "@/lib/stores/reset-all";
 
 const NAV = [
   { href: "/",            label: "Dashboard",           icon: LayoutDashboard  },
@@ -29,6 +31,7 @@ export default function Sidebar() {
   const path = usePathname();
   const [costOpen, setCostOpen] = useState(false);
   const costRef = useRef<HTMLDivElement>(null);
+  const [resetting, setResetting] = useState(false);
 
   // Close cost popover on outside click
   useEffect(() => {
@@ -94,6 +97,28 @@ export default function Sidebar() {
             </div>
           )}
         </div>
+
+        {/* Global reset — resets ALL pages */}
+        <button
+          onClick={() => {
+            resetAllStores();
+            setResetting(true);
+            setTimeout(() => setResetting(false), 1200);
+          }}
+          title="Reset all pages"
+          className={clsx(
+            "nav-item w-full flex items-center justify-center py-2.5 transition-colors",
+            resetting
+              ? "text-red-400 bg-red-400/10"
+              : "text-slate-500 hover:text-red-400 hover:bg-red-400/10"
+          )}
+        >
+          <RotateCcw
+            size={14}
+            className={clsx("shrink-0", resetting && "animate-spin")}
+          />
+          <span className="nav-tooltip">Reset All Pages</span>
+        </button>
 
         {/* Footer version */}
         <div className="px-4 py-2 border-t border-[#1f2937] text-[10px] text-slate-600 text-center">
