@@ -48,8 +48,11 @@ export const useAssistantStore = create<AssistantState>()(
       }),
       {
         name: "amr-assistant-state",
-        version: 1,
+        version: 2,
         storage: createJSONStorage(() => sessionStorage),
+        partialize: (state) => ({
+          input: state.input,
+        }),
       }
     ),
     { name: "AssistantStore", enabled: process.env.NODE_ENV === "development" }

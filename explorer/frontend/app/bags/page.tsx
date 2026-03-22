@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { analyzeBag, fetchTimeline } from "@/lib/api";
 import { useBagsStore } from "@/lib/stores/bags-store";
+import { logReset } from "@/lib/stores/reset-all";
 import BagUpload from "@/components/bags/BagUpload";
 import RIOFetchPanel from "@/components/bags/RIOFetchPanel";
 import RIOUploadPanel from "@/components/bags/RIOUploadPanel";
@@ -23,6 +24,8 @@ import {
   Radio,
   RefreshCw,
 } from "lucide-react";
+import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
 
 type Tab = "logs" | "mapdiff";
 type BagSource = "upload" | "rio" | "device";
@@ -35,18 +38,30 @@ export default function BagsPage() {
   const [error, setError] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [showRawLLM, setShowRawLLM] = useState(false);
+  // True only after the user explicitly loads a bag in the current session.
+  // Prevents the timeline from auto-rendering on page load from persisted bagPath.
+  const [sessionActive, setSessionActive] = useState(false);
+  const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("bags");
 
-  // Re-fetch timeline on reload if bagPath is persisted but timeline was lost
+  // Re-fetch timeline when bagPath is set but timeline was lost mid-session
+  // (e.g., after SPA navigation). Only runs when the user has already triggered
+  // a bag load in the current session (sessionActive), so it never auto-fetches
+  // on a cold page load from persisted bagPath.
   useEffect(() => {
-    if (bagPath && !timeline) {
-      fetchTimeline(bagPath).then(setTimeline).catch(() => {});
+    let cancelled = false;
+    if (sessionActive && bagPath && !timeline) {
+      fetchTimeline(bagPath)
+        .then((t) => { if (!cancelled) setTimeline(t); })
+        .catch(() => {});
     }
-  }, [bagPath, timeline, setTimeline]);
+    return () => { cancelled = true; };
+  }, [sessionActive, bagPath, timeline, setTimeline]);
 
   async function onUploaded(path: string) {
     resetBags();
     setBagPath(path);
     setError("");
+    setSessionActive(true);
     try {
       const tl = await fetchTimeline(path);
       setTimeline(tl);
@@ -60,7 +75,7 @@ export default function BagsPage() {
     setAnalyzing(true);
     setError("");
     try {
-      const res = await analyzeBag(bagPath, windowStart, windowEnd);
+      const res = await analyzeBag(bagPath, windowStart, windowEnd, effective ?? undefined);
       setAnalysis(res);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Analysis failed");
@@ -86,6 +101,7 @@ export default function BagsPage() {
         </div>
         <button
           onClick={() => {
+            logReset("bags");
             resetBags();
             setError("");
             setAnalyzing(false);
@@ -96,6 +112,14 @@ export default function BagsPage() {
           <RefreshCw size={12} />
           Reset
         </button>
+        <ModelSelector
+          providers={providers}
+          value={effective}
+          onChange={hasOverride ? overridePage : switchGlobalModel}
+          isOverride={hasOverride}
+          onClearOverride={clearOverride}
+          label="Model"
+        />
       </div>
 
       {/* ── Bag Source (Upload / RIO) ─────────────────────── */}
@@ -128,7 +152,7 @@ export default function BagsPage() {
       </section>
 
       {/* ── Collapsible Timeline ──────────────────────────── */}
-      {timeline && (
+      {timeline && sessionActive && (
         <section className="card p-0 overflow-hidden">
           <button
             onClick={() => setTimelineOpen((p) => !p)}

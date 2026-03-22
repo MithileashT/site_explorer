@@ -6,12 +6,16 @@ import type { SSEEvent } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import { Bot, Send, Loader2, User, RefreshCw } from "lucide-react";
 import { useAssistantStore } from "@/lib/stores/assistant-store";
+import { logReset } from "@/lib/stores/reset-all";
+import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
 
 export default function AssistantPage() {
   const { messages, addMessage, updateMessage, input, setInput, resetAssistant } = useAssistantStore();
   const [busy,    setBusy]    = useState(false);
   const [steps,   setSteps]   = useState<string[]>([]);
   const bottomRef             = useRef<HTMLDivElement>(null);
+  const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("assistant");
   const unsubRef              = useRef<(() => void) | null>(null);
 
   function scrollDown() {
@@ -25,6 +29,7 @@ export default function AssistantPage() {
   }
 
   function reset() {
+    logReset("assistant");
     cancel();
     resetAssistant();
   }
@@ -126,9 +131,19 @@ export default function AssistantPage() {
             <p className="text-xs text-slate-500">Streaming incident analysis</p>
           </div>
         </div>
-        <button onClick={reset} className="btn btn-ghost gap-1.5 text-xs">
-          <RefreshCw size={13} /> New chat
-        </button>
+        <div className="flex items-center gap-3">
+          <ModelSelector
+            providers={providers}
+            value={effective}
+            onChange={hasOverride ? overridePage : switchGlobalModel}
+            isOverride={hasOverride}
+            onClearOverride={clearOverride}
+            label="Model"
+          />
+          <button onClick={reset} className="btn btn-ghost gap-1.5 text-xs">
+            <RefreshCw size={13} /> New chat
+          </button>
+        </div>
       </div>
 
       {/* Messages */}

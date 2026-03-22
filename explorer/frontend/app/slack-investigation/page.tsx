@@ -22,10 +22,12 @@ import {
   X,
 } from "lucide-react";
 
-import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus, getAIProviders, setAIProvider, getSiteBranchInfo } from "@/lib/api";
+import { investigateSlackThread, listSiteMapSites, getSiteBranchInfo } from "@/lib/api";
+import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
+import { logReset } from "@/lib/stores/reset-all";
 import type {
   SlackThreadInvestigationRequest,
-  SlackLLMStatusResponse,
   BranchInfo,
 } from "@/lib/types";
 import { useSlackInvestigationStore } from "@/lib/stores/slack-investigation-store";
@@ -83,8 +85,6 @@ export default function SlackInvestigationPage() {
   const {
     result, setResult,
     sites, setSites,
-    providers, setProviders,
-    activeProvider, setActiveProvider,
     resetSlackInvestigation,
   } = useSlackInvestigationStore();
   const {
@@ -109,9 +109,7 @@ export default function SlackInvestigationPage() {
   const [showRaw, setShowRaw] = useState(false);
   const [sitesLoading, setSitesLoading] = useState(true);
   const [sitesError, setSitesError] = useState("");
-  const [llmStatus, setLlmStatus] = useState<SlackLLMStatusResponse | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>("");
-  const [providerSwitching, setProviderSwitching] = useState(false);
+  const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("slack-investigation");
 
   // Searchable site combobox state
   const [showSiteCombobox, setShowSiteCombobox] = useState(false);
@@ -176,48 +174,16 @@ export default function SlackInvestigationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    // Single consolidated fetch for provider info + LLM status
-    getAIProviders()
-      .then((resp) => {
-        setProviders(resp.providers);
-        setActiveProvider(resp.active);
-        setSelectedModel(resp.active.id);
-      })
-      .catch(() => {});
-
-    getSlackLLMStatus()
-      .then((s) => {
-        setLlmStatus(s);
-        // Only use status for LLM readiness info, not provider selection
-      })
-      .catch(() => {
-        // If status fails, providers endpoint already handles selection
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   async function onSubmit(data: SlackThreadInvestigationRequest) {
     setRunning(true);
     setError("");
     setResult(null);
     try {
-      // If a provider is selected and it differs from active, switch globally first
-      if (selectedModel && activeProvider && selectedModel !== activeProvider.id) {
-        try {
-          const resp = await setAIProvider(selectedModel);
-          setActiveProvider(resp.active);
-          setProviders(resp.providers);
-        } catch {
-          // Non-fatal: proceed with current active provider
-        }
-      }
-
       const payload: SlackThreadInvestigationRequest = {
         ...data,
         site_id: data.site_id?.trim() || undefined,
         max_messages: data.max_messages || 200,
-        model_override: selectedModel || undefined,
+        model_override: effective ?? undefined,
       };
       const response = await investigateSlackThread(payload);
       setResult(response);
@@ -229,6 +195,7 @@ export default function SlackInvestigationPage() {
   }
 
   function resetAll() {
+    logReset("slack-investigation");
     reset();
     resetSlackInvestigation();
     setError("");
@@ -482,105 +449,15 @@ export default function SlackInvestigationPage() {
 
                 <div>
                   <label className="mb-1 block text-xs text-slate-300">AI Provider / Model</label>
-                  <div className="relative">
-                    <select
-                      className="input appearance-none pr-10"
-                      value={selectedModel}
-                      onChange={async (e) => {
-                        const newId = e.target.value;
-                        setSelectedModel(newId);
-                        // Switch provider globally
-                        if (newId && newId !== activeProvider?.id) {
-                          setProviderSwitching(true);
-                          try {
-                            const resp = await setAIProvider(newId);
-                            setActiveProvider(resp.active);
-                            setProviders(resp.providers);
-                          } catch {
-                            // Revert selection on failure
-                            if (activeProvider) setSelectedModel(activeProvider.id);
-                          } finally {
-                            setProviderSwitching(false);
-                          }
-                        }
-                      }}
-                      disabled={running || providerSwitching || (providers.length === 0 && !llmStatus)}
-                    >
-                      {providers.length === 0 && !llmStatus && (
-                        <option value="">Loading models...</option>
-                      )}
-                      {providers.length === 0 && llmStatus && llmStatus.installed.length === 0 && (
-                        <option value="">No models available</option>
-                      )}
-                      {providers.length > 0 ? (
-                        <>
-                          {/* Group: Ollama models */}
-                          <optgroup label="Local Models (Ollama)">
-                            {providers
-                              .filter((p) => p.type === "ollama")
-                              .map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.name}
-                                  {activeProvider?.id === p.id ? " (active)" : ""}
-                                </option>
-                              ))}
-                          </optgroup>
-                          {/* Group: OpenAI models */}
-                          {providers.some((p) => p.type === "openai") && (
-                            <optgroup label="OpenAI (Custom API Key)">
-                              {providers
-                                .filter((p) => p.type === "openai")
-                                .map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    {p.name}
-                                    {activeProvider?.id === p.id ? " (active)" : ""}
-                                  </option>
-                                ))}
-                            </optgroup>
-                          )}
-                          {/* Group: Gemini models */}
-                          {providers.some((p) => p.type === "gemini") && (
-                            <optgroup label="Google Gemini">
-                              {providers
-                                .filter((p) => p.type === "gemini")
-                                .map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    {p.name}
-                                    {activeProvider?.id === p.id ? " (active)" : ""}
-                                  </option>
-                                ))}
-                            </optgroup>
-                          )}
-                        </>
-                      ) : (
-                        /* Fallback: show installed Ollama models from status */
-                        llmStatus && llmStatus.installed.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                            {m === llmStatus.text_model ? " (default)" : ""}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                    <ChevronDown
-                      size={14}
-                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
-                    />
-                  </div>
-                  {providerSwitching && (
-                    <p className="mt-0.5 text-[10px] text-sky-400">Switching provider...</p>
-                  )}
-                  {!providerSwitching && activeProvider && (
-                    <p className="mt-0.5 text-[10px] text-slate-600">
-                      Active: {activeProvider.name} ({activeProvider.type})
-                      {providers.length > 0 && ` · ${providers.length} available`}
-                    </p>
-                  )}
-                  {!providerSwitching && !activeProvider && llmStatus && (
-                    <p className="mt-0.5 text-[10px] text-slate-600">
-                      {llmStatus.installed.length} model{llmStatus.installed.length !== 1 ? "s" : ""} installed
-                    </p>
-                  )}
+                  <ModelSelector
+                    providers={providers}
+                    value={effective}
+                    onChange={hasOverride ? overridePage : switchGlobalModel}
+                    isOverride={hasOverride}
+                    onClearOverride={clearOverride}
+                    disabled={running}
+                    label=""
+                  />
                 </div>
               </div>
             </section>

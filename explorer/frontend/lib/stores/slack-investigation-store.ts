@@ -38,8 +38,9 @@ export const useSlackInvestigationStore = create<SlackInvestigationState>()(
       }),
       {
         name: "amr-slack-investigation-state",
-        version: 1,
+        version: 2,
         storage: createJSONStorage(() => sessionStorage),
+        partialize: () => ({}),
       }
     ),
     { name: "SlackInvestigationStore", enabled: process.env.NODE_ENV === "development" }

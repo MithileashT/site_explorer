@@ -36,10 +36,11 @@ import {
   fetchLogVolume,
   fetchLogQuery,
   analyseLogsAndSlack,
-  getAIProviders,
-  setAIProvider,
 } from "@/lib/api";
+import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
 import { useInvestigateStore } from "@/lib/stores/investigate-store";
+import { logReset } from "@/lib/stores/reset-all";
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  DESIGN TOKENS                                                            */
@@ -349,8 +350,6 @@ export default function LogViewerPage() {
     volumeData, setVolumeData,
     issueDesc, setIssueDesc,
     analysisResult, setAnalysisResult,
-    providers, setProviders,
-    activeProvider, setActiveProvider,
     resetInvestigate,
   } = useInvestigateStore();
 
@@ -373,8 +372,9 @@ export default function LogViewerPage() {
   const [analysisFromTime, setAnalysisFromTime] = useState(toTimeStr(now - 15 * 60 * 1000));
   const [analysisToDate, setAnalysisToDate] = useState(toDateStr(now));
   const [analysisToTime, setAnalysisToTime] = useState(toTimeStr(now));
-  const [providerSwitching, setProviderSwitching] = useState(false);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+
+  const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("investigate");
 
   /* ════ CASCADING FILTER EFFECTS ════════════════════════════════════════ */
 
@@ -609,16 +609,6 @@ export default function LogViewerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredLines, env, selectedSite, selectedHostnames, selectedDeployments, issueDesc, analysisLines, useAnalysisRange, analysisFromDate, analysisFromTime, analysisToDate, analysisToTime]);
 
-  // Load AI providers once on mount
-  useEffect(() => {
-    getAIProviders()
-      .then((resp) => {
-        setProviders(resp.providers);
-        setActiveProvider(resp.active);
-      })
-      .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /* count label */
   const countLabel = useMemo(() => {
@@ -720,11 +710,27 @@ export default function LogViewerPage() {
         </button>
         <button
           onClick={() => {
+            logReset("investigate");
             resetInvestigate();
+            // Clear all transient local state
             setFetchError("");
             setLoading(false);
+            setLoadingSites(false);
+            setLoadingHosts(false);
+            setLoadingDeps(false);
+            setBrushStart(null);
+            setBrushEnd(null);
+            setSelecting(false);
+            setLogsOpen(true);
             setAnalysing(false);
             setAnalysisError("");
+            setExpandedIdx(null);
+            setUseAnalysisRange(false);
+            const n = Date.now();
+            setAnalysisFromDate(toDateStr(n - 15 * 60 * 1000));
+            setAnalysisFromTime(toTimeStr(n - 15 * 60 * 1000));
+            setAnalysisToDate(toDateStr(n));
+            setAnalysisToTime(toTimeStr(n));
           }}
           title="Reset all filters and results"
           className="flex items-center gap-1.5 rounded bg-white/[0.05] border border-white/[0.08] px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200 hover:bg-white/[0.08] transition-colors"
@@ -1067,74 +1073,15 @@ export default function LogViewerPage() {
           </div>
 
           {/* ── AI Provider selector ────────────────────────────────── */}
-          {providers.length > 0 && (
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 shrink-0">AI provider:</span>
-              <div className="relative flex-1 max-w-xs">
-                <select
-                  className="w-full appearance-none rounded border bg-black/30 px-3 py-1.5 text-xs text-white outline-none focus:border-blue-500 pr-7"
-                  style={{ borderColor: BORDER }}
-                  value={activeProvider?.id ?? ""}
-                  disabled={analysing || providerSwitching}
-                  onChange={async (e) => {
-                    const newId = e.target.value;
-                    if (!newId || newId === activeProvider?.id) return;
-                    setProviderSwitching(true);
-                    try {
-                      const resp = await setAIProvider(newId);
-                      setActiveProvider(resp.active);
-                      setProviders(resp.providers);
-                    } catch {
-                      // revert selection handled by activeProvider state
-                    } finally {
-                      setProviderSwitching(false);
-                    }
-                  }}
-                >
-                  <optgroup label="Local Models (Ollama)">
-                    {providers
-                      .filter((p) => p.type === "ollama")
-                      .map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}{activeProvider?.id === p.id ? " (active)" : ""}
-                        </option>
-                      ))}
-                  </optgroup>
-                  {providers.some((p) => p.type === "openai") && (
-                    <optgroup label="OpenAI">
-                      {providers
-                        .filter((p) => p.type === "openai")
-                        .map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}{activeProvider?.id === p.id ? " (active)" : ""}
-                          </option>
-                        ))}
-                    </optgroup>
-                  )}
-                  {providers.some((p) => p.type === "gemini") && (
-                    <optgroup label="Google Gemini">
-                      {providers
-                        .filter((p) => p.type === "gemini")
-                        .map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}{activeProvider?.id === p.id ? " (active)" : ""}
-                          </option>
-                        ))}
-                    </optgroup>
-                  )}
-                </select>
-                <ChevronDown
-                  size={12}
-                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-500"
-                />
-              </div>
-              {providerSwitching && (
-                <span className="text-[10px] text-sky-400">
-                  <Loader2 size={10} className="inline animate-spin" /> Switching…
-                </span>
-              )}
-            </div>
-          )}
+          <ModelSelector
+            providers={providers}
+            value={effective}
+            onChange={hasOverride ? overridePage : switchGlobalModel}
+            isOverride={hasOverride}
+            onClearOverride={clearOverride}
+            disabled={analysing}
+            label="AI provider"
+          />
 
           {/* ── Analysis time range filter ───────────────────────────────── */}
           <div className="space-y-2">
