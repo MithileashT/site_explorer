@@ -176,7 +176,7 @@ class TestOllamaChatPayload:
         assert payload["options"]["num_ctx"] == settings.ollama_num_ctx
         assert payload["messages"][0]["role"] == "system"
         assert payload["messages"][1]["role"] == "user"
-        assert captured["timeout"] == 180
+        assert captured["timeout"] == 600
         assert result == "ok"
 
     def test_payload_includes_images_when_present(self, monkeypatch):

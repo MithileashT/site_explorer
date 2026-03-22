@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from core.logging import get_logger
 from schemas.analyse import AnalyseRequest, AnalyseResponse
-from services.ai.llm_service import TokenLimitError
+from services.ai.llm_service import RateLimitError, TokenLimitError
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -119,8 +119,11 @@ def _cap_lines_for_token_budget(lines: List[str], max_chars: int = 18000) -> Lis
 # ── Token estimation & chunking ─────────────────────────────────────────────
 
 _CHARS_PER_TOKEN = 4  # Conservative estimate for English text
-_MAX_PROMPT_TOKENS = 10000  # Conservative budget to stay well within 30K TPM
-_MAX_RETRIES = 3  # Maximum 429 retry attempts
+# Prompt token budgets per provider type.
+# Ollama is CPU-bound with a small context window; cloud providers can handle much more.
+_MAX_PROMPT_TOKENS_OLLAMA = 10_000   # Conservative budget for local Ollama
+_MAX_PROMPT_TOKENS_CLOUD  = 80_000   # Gemini / OpenAI can handle 128k–1M tokens
+_MAX_RETRIES = 3  # Maximum token-limit retry attempts (NOT for rate-limit errors)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -295,11 +298,11 @@ def analyse_logs_and_slack(req: AnalyseRequest) -> AnalyseResponse:
 
     # Determine the active provider from LLMService
     active_provider = _llm_service.active_provider if hasattr(_llm_service, "active_provider") else {}
-    using_openai = active_provider.get("type") == "openai"
+    using_remote = active_provider.get("type") in ("openai", "gemini")
 
-    if using_openai:
-        # OpenAI: use the active model; images handled via OpenAI's vision API
-        model = f"openai:{active_provider.get('model', settings.openai_model)}"
+    if using_remote:
+        # Cloud provider: use the active model
+        model = f"{active_provider['type']}:{active_provider.get('model', settings.openai_model)}"
         model_display = active_provider.get("model", settings.openai_model)
     else:
         # Ollama: existing model selection logic
@@ -450,6 +453,11 @@ def analyse_logs_and_slack(req: AnalyseRequest) -> AnalyseResponse:
 
     # ── Pre-emptive token budget check ──────────────────────────────────────
     max_tok = 2000
+    # Use a higher budget for cloud providers (Gemini / OpenAI) which support
+    # context windows of 128k–1M tokens. Keep a tighter limit for local Ollama.
+    max_prompt_tokens = (
+        _MAX_PROMPT_TOKENS_CLOUD if using_remote else _MAX_PROMPT_TOKENS_OLLAMA
+    )
     current_lines = list(log_lines)
     user_content = assemble_user_content(current_lines)
     est_tokens = _estimate_tokens(system + user_content) + max_tok
@@ -460,15 +468,15 @@ def analyse_logs_and_slack(req: AnalyseRequest) -> AnalyseResponse:
         "logs: %d raw → %d filtered → %d deduped | budget: %d",
         est_tokens - max_tok, max_tok, est_tokens,
         len(raw_entries), len(filtered_entries), len(log_lines),
-        _MAX_PROMPT_TOKENS,
+        max_prompt_tokens,
     )
 
-    if est_tokens > _MAX_PROMPT_TOKENS:
+    if est_tokens > max_prompt_tokens:
         # Calculate how many chars logs can use
         overhead_chars = len(system) + len(user_meta) + len(slack_section)
         avail_chars = max(
             2000,
-            _MAX_PROMPT_TOKENS * _CHARS_PER_TOKEN - overhead_chars - max_tok * _CHARS_PER_TOKEN,
+            max_prompt_tokens * _CHARS_PER_TOKEN - overhead_chars - max_tok * _CHARS_PER_TOKEN,
         )
         current_lines = _cap_lines_for_token_budget(log_lines, max_chars=avail_chars)
         if len(current_lines) < len(log_lines):
@@ -476,7 +484,7 @@ def analyse_logs_and_slack(req: AnalyseRequest) -> AnalyseResponse:
         user_content = assemble_user_content(current_lines)
         logger.info(
             "Token budget: est=%d > max=%d, capped logs from %d to %d lines",
-            est_tokens, _MAX_PROMPT_TOKENS, len(log_lines), len(current_lines),
+            est_tokens, max_prompt_tokens, len(log_lines), len(current_lines),
         )
 
     # ── Call LLM with retry on token-limit errors ───────────────────────────
@@ -496,10 +504,19 @@ def analyse_logs_and_slack(req: AnalyseRequest) -> AnalyseResponse:
                 messages=chat_messages,
                 max_tokens=max_tok,
                 temperature=0.2,
-                model_override=model if using_openai else None,
+                model_override=model if using_remote else None,
                 module="log_analyser",
             )
             break
+        except RateLimitError as exc:
+            # Rate/quota limit — do NOT retry with smaller input (it won't help).
+            logger.error("Rate/quota limit hit for provider: %s", exc)
+            raise HTTPException(
+                429,
+                f"The AI provider rate or quota limit was exceeded. "
+                f"Please wait a moment and try again, or switch to a different provider. "
+                f"({exc})",
+            ) from exc
         except TokenLimitError:
             if attempt >= _MAX_RETRIES:
                 logger.error("Token limit exceeded after %d retries", _MAX_RETRIES)

@@ -23,7 +23,12 @@ logger = get_logger(__name__)
 
 
 class TokenLimitError(RuntimeError):
-    """Raised when the LLM request exceeds token/rate limits (HTTP 429)."""
+    """Raised when the prompt exceeds the model's context window."""
+    pass
+
+
+class RateLimitError(RuntimeError):
+    """Raised when the provider returns a rate-limit or quota-exceeded error (HTTP 429)."""
     pass
 
 
@@ -102,6 +107,14 @@ class LLMService:
         if settings.openai_api_key:
             self._openai_client = OpenAI(api_key=settings.openai_api_key)
 
+        # ── Gemini client (OpenAI-compatible endpoint) ───────────────────────
+        self._gemini_client: Optional[OpenAI] = None
+        if settings.gemini_api_key:
+            self._gemini_client = OpenAI(
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=settings.gemini_api_key,
+            )
+
         # ── Actual token usage from last LLM call ────────────────────────────
         # Populated after every call to .chat(); zeroed on new call.
         self.last_usage: Dict[str, Any] = {}
@@ -167,6 +180,14 @@ class LLMService:
                 "type": "openai",
             })
 
+        # Gemini (when API key is configured)
+        if settings.gemini_api_key:
+            providers.append({
+                "id": f"gemini:{settings.gemini_model}",
+                "name": f"Gemini {settings.gemini_model}",
+                "type": "gemini",
+            })
+
         return providers
 
     @property
@@ -188,10 +209,13 @@ class LLMService:
         if ptype == "openai":
             if not self._openai_client:
                 raise ValueError("OpenAI API key is not configured. Set OPENAI_API_KEY in .env.")
+        elif ptype == "gemini":
+            if not self._gemini_client:
+                raise ValueError("Gemini API key is not configured. Set GEMINI_API_KEY in .env.")
         elif ptype == "ollama":
             pass  # Ollama is always available as a target
         else:
-            raise ValueError(f"Unknown provider type: '{ptype}'. Supported: ollama, openai.")
+            raise ValueError(f"Unknown provider type: '{ptype}'. Supported: ollama, openai, gemini.")
 
         with self._lock:
             self._active_type = ptype
@@ -200,6 +224,8 @@ class LLMService:
             # Update legacy attributes
             if ptype == "openai":
                 self.client = self._openai_client
+            elif ptype == "gemini":
+                self.client = self._gemini_client
             else:
                 self.client = self._ollama_client
             self.model = model
@@ -229,14 +255,17 @@ class LLMService:
         client = self.client
 
         if model_override:
-            if ":" in model_override and model_override.split(":", 1)[0] in ("openai", "ollama"):
+            if ":" in model_override and model_override.split(":", 1)[0] in ("openai", "ollama", "gemini"):
                 ptype, model = model_override.split(":", 1)
             else:
-                # Plain model name — infer type from active or check prefix
+                # Plain model name — assume it's an Ollama model
                 model = model_override
+                ptype = "ollama"
 
             if ptype == "openai":
                 client = self._openai_client
+            elif ptype == "gemini":
+                client = self._gemini_client
             else:
                 client = self._ollama_client
 
@@ -244,12 +273,15 @@ class LLMService:
             raise RuntimeError(f"No client available for provider '{ptype}'. Check configuration.")
 
         try:
+            # Ollama on CPU can be very slow (5-10 tok/s); give it 10 minutes.
+            # OpenAI API is fast; 3 minutes is plenty.
+            llm_timeout = 600 if ptype == "ollama" else 180
             kwargs: Dict[str, Any] = {
                 "model": model,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "messages": messages,
-                "timeout": 180,  # 3-minute timeout to prevent hanging
+                "timeout": llm_timeout,
             }
             # Pass Ollama-specific context window setting
             if ptype == "ollama":
@@ -298,7 +330,24 @@ class LLMService:
         except Exception as exc:
             error_str = str(exc).lower()
             logger.error("LLM chat failed (provider=%s, model=%s): %s", ptype, model, exc)
-            if "429" in str(exc) or "rate_limit" in error_str or "too large" in error_str or "rate limit" in error_str:
+            # Distinguish rate/quota limit (429) from context-too-large errors.
+            # Rate limits should NOT be retried by reducing input size.
+            is_rate_limit = (
+                "429" in str(exc)
+                or "rate_limit" in error_str
+                or "rate limit" in error_str
+                or "quota" in error_str
+            )
+            is_token_limit = (
+                "too large" in error_str
+                or "context_length" in error_str
+                or "context length" in error_str
+                or "maximum context" in error_str
+                or "max tokens" in error_str
+            )
+            if is_rate_limit and not is_token_limit:
+                raise RateLimitError(f"Rate/quota limit ({ptype}/{model}): {exc}") from exc
+            if is_rate_limit or is_token_limit:
                 raise TokenLimitError(f"Token limit exceeded ({ptype}/{model}): {exc}") from exc
             raise RuntimeError(f"LLM call failed ({ptype}/{model}): {exc}") from exc
 

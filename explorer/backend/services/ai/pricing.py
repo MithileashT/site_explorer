@@ -29,6 +29,10 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "o1-mini":       {"input": 1.10,  "output": 4.40},
     # GPT-3.5 Turbo (still used by some)
     "gpt-3.5-turbo": {"input": 0.50,  "output": 1.50},
+    # Google Gemini family
+    "gemini-2.0-flash":  {"input": 0.10,  "output": 0.40},
+    "gemini-1.5-flash":  {"input": 0.075, "output": 0.30},
+    "gemini-1.5-pro":    {"input": 1.25,  "output": 5.00},
 }
 
 # Fallback for unknown models (use gpt-4.1 pricing as safe default)

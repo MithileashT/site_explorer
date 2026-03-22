@@ -12,7 +12,7 @@ class AIProviderInfo(BaseModel):
 
     id: str = Field(..., description="Unique identifier, e.g. 'ollama:qwen2.5:7b' or 'openai:gpt-4.1'")
     name: str = Field(..., description="Human-readable display name")
-    type: str = Field(..., description="Provider type: 'ollama' or 'openai'")
+    type: str = Field(..., description="Provider type: 'ollama', 'openai', or 'gemini'")
 
 
 class AIProvidersResponse(BaseModel):

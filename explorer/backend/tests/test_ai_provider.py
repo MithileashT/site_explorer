@@ -266,3 +266,160 @@ def test_provider_switch_is_global():
             # Verify it used the selected model
             call_args = mock_openai.return_value.chat.completions.create.call_args
             assert call_args is not None
+
+
+# ── Gemini provider integration tests ───────────────────────────────────────
+
+
+def test_config_has_gemini_settings():
+    """settings must expose gemini_api_key and gemini_model."""
+    from core.config import settings
+
+    assert hasattr(settings, "gemini_api_key")
+    assert hasattr(settings, "gemini_model")
+    assert isinstance(settings.gemini_model, str)
+    assert len(settings.gemini_model) > 0
+
+
+def test_llm_service_includes_gemini_when_key_configured(monkeypatch):
+    """When GEMINI_API_KEY is set, Gemini should appear in available_providers."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test-key-12345")
+    monkeypatch.setattr(settings, "gemini_model", "gemini-2.0-flash")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService
+
+    with patch("services.ai.llm_service.OpenAI"):
+        svc = LLMService()
+        providers = svc.available_providers()
+        types = [p["type"] for p in providers]
+        assert "gemini" in types
+        gemini_providers = [p for p in providers if p["type"] == "gemini"]
+        assert any("gemini-2.0-flash" in p["name"] for p in gemini_providers)
+
+
+def test_llm_service_excludes_gemini_when_no_key(monkeypatch):
+    """Without GEMINI_API_KEY, Gemini should NOT appear in available_providers."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService
+
+    with patch("services.ai.llm_service.OpenAI"):
+        svc = LLMService()
+        providers = svc.available_providers()
+        types = [p["type"] for p in providers]
+        assert "gemini" not in types
+
+
+def test_llm_service_set_gemini_provider(monkeypatch):
+    """set_active_provider('gemini:gemini-2.0-flash') should switch to Gemini."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test-key-12345")
+    monkeypatch.setattr(settings, "gemini_model", "gemini-2.0-flash")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService
+
+    with patch("services.ai.llm_service.OpenAI"):
+        svc = LLMService()
+        svc.set_active_provider("gemini:gemini-2.0-flash")
+        assert svc.active_provider["type"] == "gemini"
+        assert svc.active_provider["model"] == "gemini-2.0-flash"
+
+
+def test_llm_service_set_gemini_without_key_raises(monkeypatch):
+    """set_active_provider('gemini:...') without API key should raise ValueError."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService
+
+    with patch("services.ai.llm_service.OpenAI"):
+        svc = LLMService()
+        with pytest.raises(ValueError, match="Gemini API key"):
+            svc.set_active_provider("gemini:gemini-2.0-flash")
+
+
+def test_llm_service_chat_with_gemini_override(monkeypatch):
+    """chat() with model_override='gemini:gemini-2.0-flash' should use Gemini client."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test-key-12345")
+    monkeypatch.setattr(settings, "gemini_model", "gemini-2.0-flash")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService
+
+    mock_openai = MagicMock()
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "gemini response"
+    mock_response.usage.prompt_tokens = 10
+    mock_response.usage.completion_tokens = 20
+    mock_response.usage.total_tokens = 30
+    mock_openai.return_value.chat.completions.create.return_value = mock_response
+
+    with patch("services.ai.llm_service.OpenAI", mock_openai):
+        svc = LLMService()
+        result = svc.chat(
+            messages=[{"role": "user", "content": "Hello"}],
+            model_override="gemini:gemini-2.0-flash",
+        )
+        assert result == "gemini response"
+
+
+def test_gemini_pricing_registered():
+    """Gemini models should have pricing entries."""
+    from services.ai.pricing import MODEL_PRICING
+
+    assert any("gemini" in k for k in MODEL_PRICING)
+
+
+# ── RateLimitError tests ─────────────────────────────────────────────────────
+
+
+def test_rate_limit_error_is_importable():
+    """RateLimitError must be importable alongside TokenLimitError."""
+    from services.ai.llm_service import RateLimitError, TokenLimitError  # noqa: F401
+
+
+def test_chat_raises_rate_limit_error_on_429(monkeypatch):
+    """chat() should raise RateLimitError (not TokenLimitError) on a 429 quota error."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test-key-12345")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService, RateLimitError
+
+    mock_openai = MagicMock()
+    # Simulate a 429 quota-exceeded response from the provider
+    quota_error = Exception("Error code: 429 - you exceeded your current quota")
+    mock_openai.return_value.chat.completions.create.side_effect = quota_error
+
+    with patch("services.ai.llm_service.OpenAI", mock_openai):
+        svc = LLMService()
+        with pytest.raises(RateLimitError):
+            svc.chat(messages=[{"role": "user", "content": "Hello"}])
+
+
+def test_chat_raises_token_limit_error_on_context_exceeded(monkeypatch):
+    """chat() should raise TokenLimitError when the context window is exceeded."""
+    from services.ai.llm_service import LLMService, TokenLimitError
+
+    mock_openai = MagicMock()
+    context_error = Exception("context_length_exceeded: the request is too large")
+    mock_openai.return_value.chat.completions.create.side_effect = context_error
+
+    with patch("services.ai.llm_service.OpenAI", mock_openai):
+        svc = LLMService()
+        with pytest.raises(TokenLimitError):
+            svc.chat(messages=[{"role": "user", "content": "Hello"}])

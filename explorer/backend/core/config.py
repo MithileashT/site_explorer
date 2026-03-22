@@ -3,6 +3,7 @@ core/config.py — Unified application settings loaded from environment variable
 Covers both aiassist (LLM, bag analysis) and site_commander (maps, git sync) settings.
 """
 import os
+from typing import Optional
 from dotenv import dotenv_values, load_dotenv
 
 _ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
@@ -11,7 +12,7 @@ load_dotenv(dotenv_path=_ENV_PATH, override=False)
 _SLACK_TOKEN_ENV_KEYS = ("SLACK_BOT_TOKEN", "SLACK_TOKEN", "SLACK_API_TOKEN")
 
 
-def _clean_env_value(value: str | None) -> str:
+def _clean_env_value(value: Optional[str]) -> str:
     if value is None:
         return ""
     return value.strip().strip('"').strip("'").strip()
@@ -54,6 +55,8 @@ class _Settings:
     ollama_model:    str = os.getenv("OLLAMA_MODEL",    "qwen2.5-coder")
     openai_api_key:  str = _resolve_from_dotenv("OPENAI_API_KEY")
     openai_model:    str = _resolve_from_dotenv("OPENAI_MODEL", "gpt-4.1")
+    gemini_api_key:  str = _resolve_from_dotenv("GEMINI_API_KEY")
+    gemini_model:    str = _resolve_from_dotenv("GEMINI_MODEL", "gemini-2.0-flash")
     ollama_host:     str = os.getenv(
         "OLLAMA_HOST",
         os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").removesuffix("/v1"),
@@ -79,6 +82,10 @@ class _Settings:
         os.path.expanduser("~/.config/rio-cli/config.json"),
     )
     rio_download_timeout: int = int(os.getenv("RIO_DOWNLOAD_TIMEOUT_SECONDS", "300"))
+    # Extra Rapyuta IO organizations to include in project listings.
+    # Format: "guid:Label" comma-separated. Same auth token is used for all.
+    # Example: RAPYUTA_EXTRA_ORGANIZATIONS=org-icfruprbitstlkgcbegmaqdz:Sootballs US Warehouse
+    rio_extra_organizations: str = os.getenv("RAPYUTA_EXTRA_ORGANIZATIONS", "")
 
     # ── FAISS / Vector DB ────────────────────────────────────────────────────
     faiss_path:    str = os.getenv("FAISS_PATH",    "data/faiss.index")

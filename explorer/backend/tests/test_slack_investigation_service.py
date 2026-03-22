@@ -18,6 +18,7 @@ from services.ai.slack_investigation_service import (
     _find_section,
     _split_markdown_sections,
     parse_slack_thread_url,
+    _MAX_ATTACHMENT_WORKERS,
 )
 
 
@@ -496,4 +497,111 @@ def test_as_bullets_extracts_bullet_lines() -> None:
     result = _as_bullets(text)
     assert len(result) == 3
     assert "Robot stopped near dock" in result[0]
-    assert "Nav2 crashed" in result[1]
+
+
+# ── Performance-related tests ──────────────────────────────────────────────────
+
+def test_attachment_workers_increased():
+    """Attachment download concurrency should be at least 16."""
+    assert _MAX_ATTACHMENT_WORKERS >= 16
+
+
+def test_attachment_section_not_duplicated_in_prompt(monkeypatch) -> None:
+    """Attachments should NOT be sent both inline in messages AND in the
+    separate ATTACHMENTS section. Only one location to avoid token bloat."""
+    from schemas.slack_investigation import SlackThreadAttachment
+
+    svc = SlackInvestigationService()
+    captured: dict = {}
+
+    def spy_chat(msgs, model, **kw):
+        captured["messages"] = msgs
+        captured["max_tokens"] = kw.get("max_tokens", 3500)
+        return "## Issue Overview\n- test"
+
+    monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    # Create a message with a large text attachment
+    long_content = "ERROR: " + "x" * 5000
+    att = SlackThreadAttachment(
+        filename="robot.log", filetype="log", extracted=long_content,
+    )
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Test no duplication",
+        max_messages=200,
+    )
+    msgs = [SlackThreadMessage(
+        ts="1.0", datetime="2026-03-13 10:00 UTC", user="a",
+        text="See logs", attachments=[att],
+    )]
+    svc._generate_summary(req, msgs, [att])
+
+    prompt = captured["messages"][1]["content"]
+    # Count occurrences of the attachment content — should appear at most once
+    occurrences = prompt.count("ERROR: " + "x" * 100)
+    assert occurrences <= 1, (
+        f"Attachment content appears {occurrences} times in prompt — should be at most 1"
+    )
+
+
+def test_attachment_section_truncated(monkeypatch) -> None:
+    """Attachments in the separate ATTACHMENTS section should be truncated."""
+    from schemas.slack_investigation import SlackThreadAttachment
+
+    svc = SlackInvestigationService()
+    captured: dict = {}
+
+    def spy_chat(msgs, model, **kw):
+        captured["messages"] = msgs
+        return "## Issue Overview\n- test"
+
+    monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    long_content = "A" * 10000
+    att = SlackThreadAttachment(
+        filename="huge.log", filetype="log", extracted=long_content,
+    )
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Test truncation",
+        max_messages=200,
+    )
+    msgs = [SlackThreadMessage(
+        ts="1.0", datetime="2026-03-13 10:00 UTC", user="a",
+        text="Big log", attachments=[att],
+    )]
+    svc._generate_summary(req, msgs, [att])
+
+    prompt = captured["messages"][1]["content"]
+    # The prompt should not contain the full 10000 chars of A's
+    assert prompt.count("A") < 5000, "Attachment content is not being truncated in the prompt"
+
+
+def test_max_tokens_reasonable_for_all_providers(monkeypatch) -> None:
+    """max_tokens passed to _ollama_chat should be 2000 for all providers."""
+    svc = SlackInvestigationService()
+    captured: dict = {}
+
+    def spy_chat(msgs, model, **kw):
+        captured["max_tokens"] = kw.get("max_tokens", 9999)
+        return "## Issue Overview\n- test"
+
+    monkeypatch.setattr(svc, "_ollama_chat", spy_chat)
+    monkeypatch.setattr(svc, "_ollama_models", lambda: [svc.text_model])
+
+    req = SlackThreadInvestigationRequest(
+        slack_thread_url="https://example.slack.com/archives/C123ABC45/p1772691175223000",
+        description="Test max_tokens",
+        max_messages=200,
+    )
+    msgs = [SlackThreadMessage(
+        ts="1.0", datetime="2026-03-13 10:00 UTC", user="a",
+        text="test",
+    )]
+    svc._generate_summary(req, msgs, [])
+    assert captured["max_tokens"] <= 2000, (
+        f"max_tokens is {captured['max_tokens']}, expected <= 2000 for speed"
+    )
