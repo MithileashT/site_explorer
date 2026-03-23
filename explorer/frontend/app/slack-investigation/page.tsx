@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Manrope, Space_Grotesk } from "next/font/google";
 import {
@@ -9,21 +9,28 @@ import {
   ChevronDown,
   Copy,
   CopyCheck,
+  GitBranch,
   Link2,
   Loader2,
+  MapPin,
   MessagesSquare,
   Radar,
+  Search,
   ShieldAlert,
   Sparkles,
   TerminalSquare,
+  X,
 } from "lucide-react";
 
-import { investigateSlackThread, listSiteMapSites, getSlackLLMStatus } from "@/lib/api";
+import { investigateSlackThread, listSiteMapSites, getSiteBranchInfo } from "@/lib/api";
+import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
+import { logReset } from "@/lib/stores/reset-all";
 import type {
   SlackThreadInvestigationRequest,
-  SlackThreadInvestigationResponse,
-  SlackLLMStatusResponse,
+  BranchInfo,
 } from "@/lib/types";
+import { useSlackInvestigationStore } from "@/lib/stores/slack-investigation-store";
 
 const headingFont = Space_Grotesk({
   subsets: ["latin"],
@@ -76,9 +83,16 @@ function CopyButton({ text, className = "" }: { text: string; className?: string
 
 export default function SlackInvestigationPage() {
   const {
+    result, setResult,
+    sites, setSites,
+    resetSlackInvestigation,
+  } = useSlackInvestigationStore();
+  const {
     register,
     handleSubmit,
     reset,
+    setValue,
+    watch,
     formState: { errors, isDirty },
   } = useForm<SlackThreadInvestigationRequest>({
     defaultValues: {
@@ -92,13 +106,43 @@ export default function SlackInvestigationPage() {
 
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<SlackThreadInvestigationResponse | null>(null);
   const [showRaw, setShowRaw] = useState(false);
-  const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
   const [sitesLoading, setSitesLoading] = useState(true);
   const [sitesError, setSitesError] = useState("");
-  const [llmStatus, setLlmStatus] = useState<SlackLLMStatusResponse | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>("");
+  const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("slack-investigation");
+
+  // Searchable site combobox state
+  const [showSiteCombobox, setShowSiteCombobox] = useState(false);
+  const [siteComboboxQuery, setSiteComboboxQuery] = useState("");
+  const siteComboboxRef = useRef<HTMLDivElement>(null);
+  const watchedSiteId = watch("site_id", "");
+
+  // Branch info for selected site
+  const [siteBranchInfo, setSiteBranchInfo] = useState<BranchInfo | null>(null);
+  const [siteBranchLoading, setSiteBranchLoading] = useState(false);
+
+  // Close combobox on outside click
+  useEffect(() => {
+    if (!showSiteCombobox) return;
+    function handleOutside(e: MouseEvent) {
+      if (siteComboboxRef.current && !siteComboboxRef.current.contains(e.target as Node)) {
+        setShowSiteCombobox(false);
+        setSiteComboboxQuery("");
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showSiteCombobox]);
+
+  // Fetch branch info whenever selected site changes
+  useEffect(() => {
+    if (!watchedSiteId) { setSiteBranchInfo(null); return; }
+    setSiteBranchLoading(true);
+    getSiteBranchInfo(watchedSiteId)
+      .then(setSiteBranchInfo)
+      .catch(() => setSiteBranchInfo(null))
+      .finally(() => setSiteBranchLoading(false));
+  }, [watchedSiteId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,18 +171,7 @@ export default function SlackInvestigationPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => {
-    getSlackLLMStatus()
-      .then((s) => {
-        setLlmStatus(s);
-        // Pre-select the default text model
-        setSelectedModel(s.text_model);
-      })
-      .catch(() => {
-        // Non-critical — user can still submit without model selector
-      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function onSubmit(data: SlackThreadInvestigationRequest) {
@@ -150,7 +183,7 @@ export default function SlackInvestigationPage() {
         ...data,
         site_id: data.site_id?.trim() || undefined,
         max_messages: data.max_messages || 200,
-        model_override: selectedModel || undefined,
+        model_override: effective ?? undefined,
       };
       const response = await investigateSlackThread(payload);
       setResult(response);
@@ -162,10 +195,12 @@ export default function SlackInvestigationPage() {
   }
 
   function resetAll() {
+    logReset("slack-investigation");
     reset();
-    setResult(null);
+    resetSlackInvestigation();
     setError("");
     setShowRaw(false);
+    setSiteBranchInfo(null);
   }
 
   return (
@@ -235,36 +270,163 @@ export default function SlackInvestigationPage() {
                 </div>
 
                 <div>
-                  <div>
-                    <label className="mb-1 block text-xs text-slate-300">Site ID</label>
-                    <div className="relative">
-                      <select
-                        className="input appearance-none pr-10"
-                        disabled={sitesLoading || running}
-                        {...register("site_id")}
-                      >
-                        <option value="">
+                  <label className="mb-1 block text-xs text-slate-300">Site ID</label>
+
+                  {/* Searchable site combobox */}
+                  <div className="relative" ref={siteComboboxRef}>
+                    <button
+                      type="button"
+                      disabled={sitesLoading || running}
+                      onClick={() => {
+                        if (!sitesLoading && !running) {
+                          setShowSiteCombobox(v => !v);
+                          setSiteComboboxQuery("");
+                        }
+                      }}
+                      className="input flex w-full items-center justify-between gap-2 text-left disabled:opacity-60"
+                    >
+                      <span className="flex items-center gap-2 truncate">
+                        <MapPin size={13} className="shrink-0 text-slate-500" />
+                        <span className="truncate">
                           {sitesLoading
                             ? "Loading sites..."
+                            : watchedSiteId
+                            ? (() => {
+                                const s = sites.find(x => x.id === watchedSiteId);
+                                return s ? `${s.name} (${s.id})` : watchedSiteId;
+                              })()
                             : sites.length > 0
-                              ? "Select a site (optional)"
-                              : "No sites available"}
-                        </option>
-                        {sites.map((site) => (
-                          <option key={site.id} value={site.id}>
-                            {site.name} ({site.id})
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown
-                        size={14}
-                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
-                      />
-                    </div>
-                    {sitesError && (
-                      <p className="mt-1 text-xs text-amber-200">Unable to refresh sites: {sitesError}</p>
-                    )}
+                            ? "Select a site (optional)"
+                            : "No sites available"}
+                        </span>
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0">
+                        {watchedSiteId && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setValue("site_id", "");
+                              setSiteBranchInfo(null);
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.stopPropagation();
+                                setValue("site_id", "");
+                                setSiteBranchInfo(null);
+                              }
+                            }}
+                            className="cursor-pointer rounded p-0.5 text-slate-500 hover:text-slate-300"
+                          >
+                            <X size={12} />
+                          </span>
+                        )}
+                        <ChevronDown
+                          size={14}
+                          className={`text-slate-500 transition-transform ${showSiteCombobox ? "rotate-180" : ""}`}
+                        />
+                      </span>
+                    </button>
+
+                    {/* Hidden input so react-hook-form still registers site_id */}
+                    <input type="hidden" {...register("site_id")} />
+
+                    {showSiteCombobox && (() => {
+                      const q = siteComboboxQuery.toLowerCase().trim();
+                      const filtered = q
+                        ? sites.filter(s =>
+                            s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+                          )
+                        : sites;
+                      return (
+                        <div className="absolute left-0 top-full z-50 mt-1 w-full rounded-xl border border-white/[0.1] bg-[#0f172a] shadow-2xl shadow-black/50">
+                          <div className="border-b border-white/[0.06] p-2">
+                            <div className="relative">
+                              <Search size={12} className="absolute left-2 top-1.5 text-slate-500 pointer-events-none" />
+                              <input
+                                autoFocus
+                                type="text"
+                                placeholder="Search sites..."
+                                value={siteComboboxQuery}
+                                onChange={e => setSiteComboboxQuery(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === "Escape") { setShowSiteCombobox(false); setSiteComboboxQuery(""); }
+                                  if (e.key === "Enter" && filtered.length > 0) {
+                                    setValue("site_id", filtered[0].id);
+                                    setShowSiteCombobox(false);
+                                    setSiteComboboxQuery("");
+                                  }
+                                }}
+                                className="w-full h-6 rounded-md bg-white/[0.06] border border-white/[0.08] pl-6 pr-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500/60"
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-52 overflow-y-auto py-1">
+                            {filtered.length === 0 ? (
+                              <p className="px-3 py-2 text-xs text-slate-500">No sites match</p>
+                            ) : (
+                              filtered.map(s => (
+                                <button
+                                  key={s.id}
+                                  type="button"
+                                  onMouseDown={() => {
+                                    setValue("site_id", s.id);
+                                    setShowSiteCombobox(false);
+                                    setSiteComboboxQuery("");
+                                  }}
+                                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.05] ${
+                                    watchedSiteId === s.id ? "text-sky-400" : "text-slate-300"
+                                  }`}
+                                >
+                                  <MapPin
+                                    size={10}
+                                    className={watchedSiteId === s.id ? "text-sky-400 shrink-0" : "text-slate-600 shrink-0"}
+                                  />
+                                  <span className="flex-1 truncate">{s.name}</span>
+                                  <span className="font-mono text-[10px] text-slate-500">{s.id}</span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
+
+                  {/* Branch info for selected site */}
+                  {watchedSiteId && (
+                    <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
+                      <GitBranch size={11} className="shrink-0 text-slate-500" />
+                      {siteBranchLoading ? (
+                        <span className="text-slate-500">Loading branch…</span>
+                      ) : siteBranchInfo ? (
+                        <>
+                          <span
+                            className={`rounded px-1.5 py-0.5 font-mono font-medium ${
+                              siteBranchInfo.is_site_specific
+                                ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                                : "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                            }`}
+                          >
+                            {siteBranchInfo.branch}
+                          </span>
+                          {!siteBranchInfo.is_site_specific && (
+                            <span className="text-amber-400/80">No dedicated branch — serving from main</span>
+                          )}
+                          {siteBranchInfo.is_override && (
+                            <span className="text-amber-400/80">(manual override)</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-slate-500">Branch info unavailable</span>
+                      )}
+                    </div>
+                  )}
+
+                  {sitesError && (
+                    <p className="mt-1 text-xs text-amber-200">Unable to refresh sites: {sitesError}</p>
+                  )}
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -286,33 +448,16 @@ export default function SlackInvestigationPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs text-slate-300">LLM Model</label>
-                  <div className="relative">
-                    <select
-                      className="input appearance-none pr-10"
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      disabled={running || !llmStatus}
-                    >
-                      {!llmStatus && (
-                        <option value="">Loading models...</option>
-                      )}
-                      {llmStatus && llmStatus.installed.map((m) => (
-                        <option key={m} value={m}>
-                          {m}{m === llmStatus.text_model ? " (default)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown
-                      size={14}
-                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
-                    />
-                  </div>
-                  {llmStatus && (
-                    <p className="mt-1 text-xs text-slate-500">
-                      {llmStatus.installed.length} model{llmStatus.installed.length !== 1 ? "s" : ""} installed
-                    </p>
-                  )}
+                  <label className="mb-1 block text-xs text-slate-300">AI Provider / Model</label>
+                  <ModelSelector
+                    providers={providers}
+                    value={effective}
+                    onChange={hasOverride ? overridePage : switchGlobalModel}
+                    isOverride={hasOverride}
+                    onClearOverride={clearOverride}
+                    disabled={running}
+                    label=""
+                  />
                 </div>
               </div>
             </section>
@@ -389,6 +534,19 @@ export default function SlackInvestigationPage() {
                         Model: {result.model_used}
                       </span>
                     )}
+                    {(result.actual_total_tokens ?? 0) > 0 && (() => {
+                      const pin  = result.actual_prompt_tokens     ?? 0;
+                      const pout = result.actual_completion_tokens ?? 0;
+                      const cost = result.cost_usd ?? (pin * 2.00 + pout * 8.00) / 1_000_000;
+                      return (
+                        <span
+                          className="rounded-full border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200"
+                          title={`Actual tokens used · in=${pin.toLocaleString()} out=${pout.toLocaleString()} · gpt-4.1: $2/M in, $8/M out`}
+                        >
+                          {pin.toLocaleString()} in | {pout.toLocaleString()} out · ${cost.toFixed(4)}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </section>
 
@@ -420,7 +578,36 @@ export default function SlackInvestigationPage() {
                       <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
                         Thread Summary
                       </h3>
-                      <p className="text-sm text-slate-300">{result.thread_summary}</p>
+                      <div className="space-y-3 text-sm text-slate-300">
+                        {result.thread_summary.split("\n\n").map((block, bi) => {
+                          const boldMatch = block.match(/^\*\*(.+?)\*\*\n?([\s\S]*)$/);
+                          if (boldMatch) {
+                            const heading = boldMatch[1];
+                            const body = boldMatch[2].trim();
+                            const bullets = body.split("\n").filter((l) => l.trim().startsWith("-"));
+                            return (
+                              <div key={bi}>
+                                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                  {heading}
+                                </p>
+                                {bullets.length > 0 ? (
+                                  <ul className="space-y-1 pl-1">
+                                    {bullets.map((b, idx) => (
+                                      <li key={idx} className="flex items-start gap-2">
+                                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400/60" />
+                                        <span>{b.replace(/^-\s*/, "")}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p>{body}</p>
+                                )}
+                              </div>
+                            );
+                          }
+                          return <p key={bi} className="whitespace-pre-wrap">{block}</p>;
+                        })}
+                      </div>
                     </div>
 
                     <div className="border-t border-slate-700/50" />

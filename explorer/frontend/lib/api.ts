@@ -13,6 +13,7 @@ import type {
   SiteMapMeta,
   SiteMapData,
   SiteMarkers,
+  AllSiteMarkers,
   BranchInfo,
   BranchCleanupPlan,
   BranchCleanupResult,
@@ -20,6 +21,19 @@ import type {
   SlackThreadInvestigationRequest,
   SlackThreadInvestigationResponse,
   SlackLLMStatusResponse,
+  TrajectoryResponse,
+  BagTopicsResponse,
+  NavTopicsResponse,
+  AIProvidersResponse,
+  AIUsageResponse,
+  RIOFetchRequest,
+  RIOFetchResponse,
+  RIOStatusResponse,
+  RIOProjectsResponse,
+  RIODevicesRequest,
+  RIODevicesResponse,
+  RIOTriggerUploadRequest,
+  RIOUploadJobResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -110,12 +124,14 @@ export async function fetchTimeline(bagPath: string, nBuckets = 60): Promise<Bag
 export async function analyzeBag(
   bagPath: string,
   windowStart?: number,
-  windowEnd?: number
+  windowEnd?: number,
+  modelOverride?: string
 ): Promise<BagLogAnalysisResponse> {
   const { data } = await http.post<BagLogAnalysisResponse>("/bags/analyze", {
     bag_path: bagPath,
     window_start: windowStart,
     window_end: windowEnd,
+    model_override: modelOverride,
   });
   return data;
 }
@@ -129,6 +145,105 @@ export async function runMapDiff(
     topic_override: topicOverride,
   });
   return data;
+}
+
+export async function extractBagTrajectory(
+  bagPath: string,
+  siteId?: string,
+  maxPoints = 4000,
+  topicOverride?: string,
+  smooth = true
+): Promise<TrajectoryResponse> {
+  const { data } = await http.post<TrajectoryResponse>("/bags/trajectory", {
+    bag_path:       bagPath,
+    site_id:        siteId ?? null,
+    max_points:     maxPoints,
+    topic_override: topicOverride ?? null,
+    smooth,
+  });
+  return data;
+}
+
+export async function listBagTopics(
+  bagPath: string
+): Promise<BagTopicsResponse> {
+  const { data } = await http.get<BagTopicsResponse>("/bags/topics", {
+    params: { bag_path: bagPath },
+  });
+  return data;
+}
+
+export async function listNavTopics(
+  bagPath: string
+): Promise<NavTopicsResponse> {
+  const { data } = await http.get<NavTopicsResponse>("/bags/nav-topics", {
+    params: { bag_path: bagPath },
+  });
+  return data;
+}
+
+// ── RIO Bag Fetch ─────────────────────────────────────────────────────────────
+
+export async function getRIOStatus(): Promise<RIOStatusResponse> {
+  const { data } = await http.get<RIOStatusResponse>("/bags/rio/status");
+  return data;
+}
+
+export async function fetchBagFromRIO(params: RIOFetchRequest): Promise<RIOFetchResponse> {
+  const { data } = await http.post<RIOFetchResponse>("/bags/rio/fetch", params);
+  return data;
+}
+
+// ── RIO Device Upload ─────────────────────────────────────────────────────────
+
+export async function getRIOProjects(): Promise<RIOProjectsResponse> {
+  const { data } = await http.get<RIOProjectsResponse>("/bags/rio/projects");
+  return data;
+}
+
+export async function getRIODevices(req: RIODevicesRequest): Promise<RIODevicesResponse> {
+  const { data } = await http.post<RIODevicesResponse>("/bags/rio/devices", req);
+  return data;
+}
+
+export async function triggerRIOUpload(req: RIOTriggerUploadRequest): Promise<RIOUploadJobResponse> {
+  const { data } = await http.post<RIOUploadJobResponse>("/bags/rio/trigger-upload", req);
+  return data;
+}
+
+export async function discoverRIOBags(req: import("./types").RIODiscoverBagsRequest): Promise<import("./types").RIODiscoverBagsResponse> {
+  const { data } = await http.post<import("./types").RIODiscoverBagsResponse>("/bags/rio/discover-bags", req);
+  return data;
+}
+
+/**
+ * Subscribe to SSE progress events for an upload job.
+ * Returns the EventSource so callers can close it.
+ */
+export function subscribeUploadStatus(
+  jobId: string,
+  onEvent: (ev: import("./types").RIOUploadEvent) => void,
+  onDone: () => void,
+  onError?: (err: Event) => void,
+): EventSource {
+  const url = `${BASE}/api/v1/bags/rio/upload-status/${encodeURIComponent(jobId)}`;
+  const es = new EventSource(url);
+  es.onmessage = (msg) => {
+    try {
+      const parsed = JSON.parse(msg.data);
+      onEvent(parsed);
+      if (parsed.event === "job_done") {
+        es.close();
+        onDone();
+      }
+    } catch { /* ignore parse errors */ }
+  };
+  es.onerror = (err) => {
+    es.close();
+    onError?.(err);
+    onDone();
+  };
+  return es;
 }
 
 // ── Investigation ─────────────────────────────────────────────────────────────
@@ -207,6 +322,11 @@ export async function getSiteMarkers(siteId: string): Promise<SiteMarkers> {
   return data;
 }
 
+export async function getAllSiteMarkers(): Promise<AllSiteMarkers> {
+  const { data } = await http.get<AllSiteMarkers>(`/sitemap/markers`);
+  return data;
+}
+
 // ── Sitemap — Git Branch ──────────────────────────────────────────────────────
 
 export async function getSiteBranchInfo(siteId: string): Promise<BranchInfo> {
@@ -244,11 +364,176 @@ export async function runBranchCleanup(): Promise<BranchCleanupResult> {
 export async function investigateSlackThread(
   payload: SlackThreadInvestigationRequest
 ): Promise<SlackThreadInvestigationResponse> {
-  const { data } = await http.post<SlackThreadInvestigationResponse>("/slack/investigate", payload);
+  // LLM inference on CPU can take several minutes — use a dedicated long timeout.
+  const { data } = await http.post<SlackThreadInvestigationResponse>(
+    "/slack/investigate",
+    payload,
+    { timeout: 720_000 },  // 12 minutes
+  );
   return data;
 }
 
 export async function getSlackLLMStatus(): Promise<SlackLLMStatusResponse> {
   const { data } = await http.get<SlackLLMStatusResponse>("/slack/status");
+  return data;
+}
+
+// ── AI Provider Configuration ───────────────────────────────────────────────
+
+export async function getAIProviders(): Promise<AIProvidersResponse> {
+  const { data } = await http.get<AIProvidersResponse>("/ai/providers");
+  return data;
+}
+
+export async function setAIProvider(providerId: string): Promise<AIProvidersResponse> {
+  const { data } = await http.post<AIProvidersResponse>("/ai/provider", {
+    provider_id: providerId,
+  });
+  return data;
+}
+
+export async function fetchAIUsage(): Promise<AIUsageResponse> {
+  const { data } = await http.get<AIUsageResponse>("/ai/usage");
+  return data;
+}
+
+export async function resetAIUsage(): Promise<void> {
+  await http.post("/ai/usage/reset");
+}
+
+// ── Grafana ─────────────────────────────────────────────────────────────────
+
+import type {
+  GrafanaLogsResponse,
+  GrafanaStatusResponse,
+  AnalyseRequest,
+  AnalyseResponse,
+  LokiQueryResponse,
+  LokiVolumeBucket,
+} from "./types";
+
+export async function getGrafanaStatus(): Promise<GrafanaStatusResponse> {
+  const { data } = await http.get<GrafanaStatusResponse>("/grafana/status");
+  return data;
+}
+
+export async function fetchGrafanaLogs(params: {
+  site: string;
+  hostname?: string;
+  deployment?: string;
+  filter?: string;
+  from_ms?: number;
+  to_ms?: number;
+  max_lines?: number;
+  datasource?: string;
+}): Promise<GrafanaLogsResponse> {
+  const { data } = await http.get<GrafanaLogsResponse>("/grafana/logs", { params });
+  return data;
+}
+
+// ── Combined AI Analyse ─────────────────────────────────────────────────────
+
+export async function analyseLogsAndSlack(payload: AnalyseRequest): Promise<AnalyseResponse> {
+  const { data } = await http.post<AnalyseResponse>("/investigate/analyse", payload);
+  return data;
+}
+
+// ── Log Viewer (Grafana-style) ──────────────────────────────────────────────
+
+export async function fetchLogHostnames(
+  env: string,
+  site: string,
+  datasource?: string,
+): Promise<string[]> {
+  const { data } = await http.get<string[]>("/logs/hostnames", {
+    params: { env, site, datasource },
+  });
+  return data;
+}
+
+export async function fetchLogDeployments(
+  env: string,
+  site: string,
+  hostname?: string,
+  datasource?: string,
+): Promise<string[]> {
+  const { data } = await http.get<string[]>("/logs/deployments", {
+    params: { env, site, hostname, datasource },
+  });
+  return data;
+}
+
+export async function fetchLogs(params: {
+  env: string;
+  site: string;
+  hostname?: string;
+  deployment?: string;
+  search?: string;
+  exclude?: string;
+  from_ms?: number;
+  to_ms?: number;
+  max_lines?: number;
+}): Promise<GrafanaLogsResponse> {
+  const { data } = await http.get<GrafanaLogsResponse>("/logs", { params });
+  return data;
+}
+
+// ── Loki Direct Endpoints (new) ─────────────────────────────────────────────
+
+export async function fetchLogEnvironments(): Promise<string[]> {
+  const { data } = await http.get<string[]>("/logs/environments");
+  return data;
+}
+
+export async function fetchLogSites(env: string): Promise<string[]> {
+  const { data } = await http.get<string[]>("/logs/sites", { params: { env } });
+  return data;
+}
+
+export async function fetchLogHostnamesV2(
+  env: string,
+  site: string,
+): Promise<string[]> {
+  const { data } = await http.get<string[]>("/logs/hostnames", {
+    params: { env, site },
+  });
+  return data;
+}
+
+export async function fetchLogDeploymentsV2(
+  env: string,
+  site: string,
+  hostname: string,
+): Promise<string[]> {
+  const { data } = await http.get<string[]>("/logs/deployments", {
+    params: { env, site, hostname },
+  });
+  return data;
+}
+
+export async function fetchLogVolume(params: {
+  env: string;
+  site: string;
+  hostname?: string;
+  deployment?: string;
+  from?: number;
+  to?: number;
+}): Promise<LokiVolumeBucket[]> {
+  const { data } = await http.get<LokiVolumeBucket[]>("/logs/volume", { params });
+  return data;
+}
+
+export async function fetchLogQuery(params: {
+  env: string;
+  site: string;
+  hostname?: string;
+  deployment?: string;
+  search?: string;
+  exclude?: string;
+  from?: number;
+  to?: number;
+  limit?: number;
+}): Promise<LokiQueryResponse> {
+  const { data } = await http.get<LokiQueryResponse>("/logs/query", { params });
   return data;
 }

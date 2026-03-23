@@ -17,6 +17,7 @@ import type {
   SiteMapRegion,
   SiteMapMarker,
   SiteMapNode,
+  TrajectoryPoint,
 } from "@/lib/types";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -44,6 +45,10 @@ interface Props {
   hiddenSpotTypes?: ReadonlySet<string>;
   hiddenRegionTypes?: ReadonlySet<string>;
   onSpotSelect?: (spot: SiteMapSpot | null) => void;
+  /** Optional AMR trajectory to render on top of the map. */
+  trajectory?: TrajectoryPoint[];
+  /** When set (0…trajectory.length-1), renders partial trail + robot icon for playback. */
+  playbackIndex?: number;
 }
 
 // ── Public handle ─────────────────────────────────────────────────────────────
@@ -81,6 +86,8 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
   hiddenSpotTypes,
   hiddenRegionTypes,
   onSpotSelect,
+  trajectory = [],
+  playbackIndex,
 }: Props, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef    = useRef<HTMLCanvasElement>(null);
@@ -200,6 +207,15 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
       })
       .filter((v): v is { edge: (typeof data.edges)[number]; p1: [number, number]; p2: [number, number] } => v !== null);
   }, [data, nodePixels]);
+
+  // Pre-convert trajectory world coords to image-pixel coords
+  const trajectoryPixels = useMemo(
+    () => trajectory.map(pt => ({
+      pt,
+      px: w2p(pt.x, pt.y) as [number, number],
+    })),
+    [trajectory, w2p]
+  );
 
   // ── Draw function ───────────────────────────────────────────────────────────
 
@@ -408,7 +424,7 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
         if (matched) {
           ctx.fillStyle = "#ff1493";
         } else if (node.parkable) {
-          ctx.fillStyle = isHovered ? "#6ee7b7" : "#34d399";
+          ctx.fillStyle = isHovered ? "#e42d3c" : "#42b98d";
         } else {
           ctx.fillStyle = isHovered ? "#93c5fd" : "#60a5fa";
         }
@@ -869,6 +885,153 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
       });
     }
 
+    // ── AMR Trajectory ────────────────────────────────────────────────────
+    if (trajectoryPixels.length >= 2) {
+      // If playback is active, only show trail up to playbackIndex
+      const isPlayback = playbackIndex != null && playbackIndex >= 0;
+      const endIdx = isPlayback ? Math.min(playbackIndex + 1, trajectoryPixels.length) : trajectoryPixels.length;
+      const pts = isPlayback ? trajectoryPixels.slice(0, endIdx) : trajectoryPixels;
+      const total = pts.length;
+
+      if (total >= 2) {
+        // Build a cyan→lime gradient along the path length for the stroke
+        const startPt = pts[0].px;
+        const endPt   = pts[total - 1].px;
+        const lineGrad = ctx.createLinearGradient(
+          startPt[0], startPt[1], endPt[0], endPt[1]
+        );
+        lineGrad.addColorStop(0,   "rgb(255, 0, 0)");   // pure red
+        lineGrad.addColorStop(0.5, "rgb(255, 0, 0)");   // pure red
+        lineGrad.addColorStop(1,   "rgb(255, 0, 0)");   // pure red
+        // Draw the main path line
+        ctx.beginPath();
+        pts.forEach(({ px: [px, py] }, i) => {
+          if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
+        });
+        ctx.strokeStyle = lineGrad;
+        ctx.lineWidth   = Math.max(1.2, 2.5 / scale);
+        ctx.lineJoin    = "round";
+        ctx.lineCap     = "round";
+        ctx.stroke();
+
+        // Thin white glow pass for depth
+        ctx.beginPath();
+        pts.forEach(({ px: [px, py] }, i) => {
+          if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
+        });
+        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+        ctx.lineWidth   = Math.max(2.5, 5 / scale);
+        ctx.lineJoin    = "round";
+        ctx.lineCap     = "round";
+        ctx.stroke();
+
+        // Direction arrows every ~80 pts (capped so arrows don't crowd)
+        const arrowEvery = Math.max(1, Math.round(total / Math.min(40, total)));
+        const arrowLen   = Math.max(3, 8 / scale);
+        const arrowHW    = Math.max(1.5, 3.5 / scale);
+        for (let i = arrowEvery; i < total - 1; i += arrowEvery) {
+          const [ax, ay] = pts[i].px;
+          const [bx, by] = pts[i + 1].px;
+          const angle    = Math.atan2(by - ay, bx - ax);
+          // Filled arrowhead
+          ctx.save();
+          ctx.translate(ax, ay);
+          ctx.rotate(angle);
+          ctx.beginPath();
+          ctx.moveTo(arrowLen, 0);
+          ctx.lineTo(-arrowLen * 0.2,  arrowHW);
+          ctx.lineTo(-arrowLen * 0.2, -arrowHW);
+          ctx.closePath();
+          ctx.fillStyle = "rgba(255, 0, 0, 0.7)";
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Start marker — green circle with "S"
+        {
+          const [sx, sy] = startPt;
+          const r        = Math.max(4, 7 / scale);
+          ctx.beginPath();
+          ctx.arc(sx, sy, r, 0, Math.PI * 2);
+          ctx.fillStyle   = "rgba(47, 255, 0, 0.9)";
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth   = 1.5 / scale;
+          ctx.fill();
+          ctx.stroke();
+          if (scale > 0.3) {
+            const fs = Math.max(6, 8 / scale);
+            ctx.font         = `bold ${fs}px ui-sans-serif,system-ui,sans-serif`;
+            ctx.textAlign    = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillStyle    = "#ffffff";
+            ctx.fillText("S", sx, sy);
+            ctx.textAlign    = "left";
+            ctx.textBaseline = "alphabetic";
+          }
+        }
+
+        // End marker — red circle with "E" (only in non-playback mode or at end)
+        if (!isPlayback || playbackIndex >= trajectoryPixels.length - 1) {
+          const allPts = trajectoryPixels;
+          const [ex, ey] = allPts[allPts.length - 1].px;
+          const r        = Math.max(4, 7 / scale);
+          ctx.beginPath();
+          ctx.arc(ex, ey, r, 0, Math.PI * 2);
+          ctx.fillStyle   = "rgba(47, 255, 0, 0.9)";
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth   = 1.5 / scale;
+          ctx.fill();
+          ctx.stroke();
+          if (scale > 0.3) {
+            const fs = Math.max(6, 8 / scale);
+            ctx.font         = `bold ${fs}px ui-sans-serif,system-ui,sans-serif`;
+            ctx.textAlign    = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillStyle    = "#ffffff";
+            ctx.fillText("E", ex, ey);
+            ctx.textAlign    = "left";
+            ctx.textBaseline = "alphabetic";
+          }
+        }
+
+        // Robot icon during playback — rotated triangle based on yaw
+        if (isPlayback && playbackIndex < trajectoryPixels.length) {
+          const cur = trajectoryPixels[playbackIndex];
+          const [rx, ry] = cur.px;
+          const robotYaw = cur.pt.yaw;
+          const rSize = Math.max(5, 10 / scale);
+
+          // Convert yaw to canvas angle (yaw is CCW from +X in world, canvas Y is flipped)
+          const canvasAngle = -robotYaw;
+
+          ctx.save();
+          ctx.translate(rx, ry);
+          ctx.rotate(canvasAngle);
+
+          // Triangle pointing right (in local frame)
+          ctx.beginPath();
+          ctx.moveTo(rSize * 1.3, 0);
+          ctx.lineTo(-rSize * 0.7,  rSize * 0.8);
+          ctx.lineTo(-rSize * 0.7, -rSize * 0.8);
+          ctx.closePath();
+          ctx.fillStyle   = "rgba(255, 255, 255, 0.92)";
+          ctx.strokeStyle = "rgba(255, 0, 0, 0.95)";
+          ctx.lineWidth   = Math.max(1, 1.8 / scale);
+          ctx.fill();
+          ctx.stroke();
+
+          // Pulsing glow ring
+          ctx.beginPath();
+          ctx.arc(0, 0, rSize * 1.6, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(6, 182, 212, 0.35)";
+          ctx.lineWidth   = Math.max(1, 2 / scale);
+          ctx.stroke();
+
+          ctx.restore();
+        }
+      }
+    }
+
     // ── Flush deferred tooltip queue (always on top of all map elements) ──
     tooltipQueue.forEach(fn => fn());
 
@@ -1023,6 +1186,8 @@ const SiteMapCanvas = forwardRef<SiteMapCanvasHandle, Props>(function SiteMapCan
     w2p,
     hiddenSpotTypes,
     hiddenRegionTypes,
+    trajectoryPixels,
+    playbackIndex,
   ]);
 
   // ── Animation loop ──────────────────────────────────────────────────────────

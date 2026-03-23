@@ -549,3 +549,211 @@ class TestMarkersAPIEndpoint:
         expected = len(_raw_markers(site_id))
         actual = len(response.json()["markers"])
         assert actual == expected
+
+
+# ── Unit Tests: get_all_markers ───────────────────────────────────────────────
+
+
+class TestGetAllMarkersUnit:
+    """Unit tests for SiteMapService.get_all_markers()."""
+
+    def _multi_site_svc(self, sites_and_yamls: dict[str, str | None]) -> SiteMapService:
+        """
+        Build a SiteMapService whose _read_bytes and list_sites are mocked
+        so that each site_id maps to a given yaml string (or None for missing).
+        """
+        from unittest.mock import MagicMock
+
+        svc = SiteMapService("/fake/root")
+
+        def fake_list_sites():
+            return [{"id": sid} for sid in sites_and_yamls]
+
+        def fake_read_bytes(site_id, *paths):
+            content = sites_and_yamls.get(site_id)
+            if content is None:
+                return None
+            return content.encode()
+
+        svc.list_sites = fake_list_sites  # type: ignore[method-assign]
+        svc._read_bytes = fake_read_bytes  # type: ignore[method-assign]
+        return svc
+
+    def test_returns_expected_keys(self):
+        svc = self._multi_site_svc({
+            "siteA": "markers:\n  1:\n    position: [1.0, 2.0, 0.0]\n    orientation: [0,0,0]\n",
+        })
+        result = svc.get_all_markers()
+        assert "markers" in result
+        assert "site_count" in result
+        assert "total" in result
+
+    def test_aggregates_multiple_sites(self):
+        yaml_a = dedent("""\
+            markers:
+              1:
+                position: [1.0, 2.0, 0.0]
+                orientation: [0.0, 0.0, 0.0]
+        """)
+        yaml_b = dedent("""\
+            markers:
+              2:
+                position: [3.0, 4.0, 0.0]
+                orientation: [0.0, 0.0, 0.0]
+              3:
+                position: [5.0, 6.0, 0.0]
+                orientation: [0.0, 0.0, 0.0]
+        """)
+        svc = self._multi_site_svc({"siteA": yaml_a, "siteB": yaml_b})
+        result = svc.get_all_markers()
+        assert result["total"] == 3
+        assert result["site_count"] == 2
+
+    def test_each_marker_has_site_id(self):
+        yaml_src = dedent("""\
+            markers:
+              5:
+                position: [1.0, 2.0, 0.0]
+                orientation: [0.0, 0.0, 0.0]
+        """)
+        svc = self._multi_site_svc({"mysite": yaml_src})
+        for m in svc.get_all_markers()["markers"]:
+            assert m["site_id"] == "mysite"
+
+    def test_site_id_matches_each_entry(self):
+        yaml_a = "markers:\n  0:\n    position: [0,0,0]\n    orientation: [0,0,0]\n"
+        yaml_b = "markers:\n  0:\n    position: [1,1,0]\n    orientation: [0,0,0]\n"
+        svc = self._multi_site_svc({"alpha": yaml_a, "beta": yaml_b})
+        result = svc.get_all_markers()
+        site_ids = {m["site_id"] for m in result["markers"]}
+        assert site_ids == {"alpha", "beta"}
+
+    def test_site_without_yaml_skipped(self):
+        yaml_a = "markers:\n  1:\n    position: [1,2,0]\n    orientation: [0,0,0]\n"
+        svc = self._multi_site_svc({"hasMarkers": yaml_a, "noMarkers": None})
+        result = svc.get_all_markers()
+        assert result["site_count"] == 1
+        assert result["total"] == 1
+        assert all(m["site_id"] == "hasMarkers" for m in result["markers"])
+
+    def test_empty_sites_returns_zero(self):
+        svc = self._multi_site_svc({})
+        result = svc.get_all_markers()
+        assert result["markers"] == []
+        assert result["total"] == 0
+        assert result["site_count"] == 0
+
+    def test_total_matches_len_markers(self):
+        yaml_src = dedent("""\
+            markers:
+              0:
+                position: [0,0,0]
+                orientation: [0,0,0]
+              1:
+                position: [1,1,0]
+                orientation: [0,0,0]
+        """)
+        svc = self._multi_site_svc({"s": yaml_src})
+        result = svc.get_all_markers()
+        assert result["total"] == len(result["markers"])
+
+    def test_existing_marker_fields_preserved(self):
+        yaml_src = "markers:\n  7:\n    position: [1.5, 2.5, 0.1]\n    orientation: [0,0,45.0]\n"
+        svc = self._multi_site_svc({"site1": yaml_src})
+        m = svc.get_all_markers()["markers"][0]
+        assert m["id"] == 7
+        assert m["x"] == pytest.approx(1.5)
+        assert m["y"] == pytest.approx(2.5)
+        assert m["z"] == pytest.approx(0.1)
+        assert m["yaw"] == pytest.approx(math.radians(45.0))
+        assert m["site_id"] == "site1"
+
+
+# ── Integration Tests: get_all_markers ────────────────────────────────────────
+
+
+@pytest.mark.skipif(not SITES_ROOT.exists(), reason="sootballs_sites not present")
+class TestGetAllMarkersIntegration:
+
+    def test_returns_non_empty_list(self):
+        svc = _real_svc()
+        result = svc.get_all_markers()
+        assert len(result["markers"]) > 0
+
+    def test_site_count_matches_sites_with_yaml(self):
+        svc = _real_svc()
+        result = svc.get_all_markers()
+        assert result["site_count"] == len(REAL_SITES)
+
+    def test_all_entries_have_site_id(self):
+        svc = _real_svc()
+        for m in svc.get_all_markers()["markers"]:
+            assert "site_id" in m and m["site_id"]
+
+    def test_total_consistent_with_list(self):
+        svc = _real_svc()
+        result = svc.get_all_markers()
+        assert result["total"] == len(result["markers"])
+
+    def test_all_entries_have_required_fields(self):
+        svc = _real_svc()
+        for m in svc.get_all_markers()["markers"]:
+            for field in ("site_id", "id", "x", "y", "z", "yaw"):
+                assert field in m, f"missing '{field}' in {m}"
+
+    def test_no_duplicate_site_id_marker_id_pairs(self):
+        svc = _real_svc()
+        seen: set[tuple[str, int]] = set()
+        dupes = []
+        for m in svc.get_all_markers()["markers"]:
+            key = (m["site_id"], m["id"])
+            if key in seen:
+                dupes.append(key)
+            seen.add(key)
+        assert not dupes, f"duplicate (site_id, marker_id) pairs: {dupes[:5]}"
+
+
+# ── API Tests: /markers all-sites endpoint ────────────────────────────────────
+
+
+@pytest.mark.skipif(not SITES_ROOT.exists(), reason="sootballs_sites not present")
+class TestAllMarkersAPIEndpoint:
+
+    @pytest.fixture(autouse=True)
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        self.client = TestClient(app)
+
+    def test_endpoint_returns_200(self):
+        response = self.client.get("/api/v1/sitemap/markers")
+        assert response.status_code == 200
+
+    def test_response_has_required_keys(self):
+        body = self.client.get("/api/v1/sitemap/markers").json()
+        assert "markers" in body
+        assert "site_count" in body
+        assert "total" in body
+
+    def test_markers_is_list(self):
+        body = self.client.get("/api/v1/sitemap/markers").json()
+        assert isinstance(body["markers"], list)
+
+    def test_total_matches_list_length(self):
+        body = self.client.get("/api/v1/sitemap/markers").json()
+        assert body["total"] == len(body["markers"])
+
+    def test_each_marker_has_site_id(self):
+        body = self.client.get("/api/v1/sitemap/markers").json()
+        for m in body["markers"][:20]:  # spot-check first 20
+            assert "site_id" in m, f"site_id missing from {m}"
+
+    def test_each_marker_has_coordinate_fields(self):
+        body = self.client.get("/api/v1/sitemap/markers").json()
+        for m in body["markers"][:20]:
+            for field in ("id", "x", "y", "z", "yaw"):
+                assert field in m, f"field '{field}' missing from {m}"
+
+    def test_site_count_is_positive(self):
+        body = self.client.get("/api/v1/sitemap/markers").json()
+        assert body["site_count"] > 0

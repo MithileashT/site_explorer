@@ -41,11 +41,9 @@ class _StatusService:
     def llm_status(self):
         return SlackLLMStatusResponse(
             status="online",
-            vision_model="llama3.2-vision:11b",
             text_model="qwen2.5:7b",
-            vision_ready=True,
             text_ready=True,
-            installed=["llama3.2-vision:11b", "qwen2.5:7b"],
+            installed=["llama3.1:8b", "qwen2.5:7b"],
         )
 
 
@@ -83,4 +81,4 @@ def test_slack_status_endpoint_success(monkeypatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "online"
-    assert body["vision_ready"] is True
+    assert body["text_ready"] is True

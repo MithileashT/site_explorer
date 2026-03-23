@@ -2,28 +2,20 @@
 
 import { useRef, useState } from "react";
 import { streamInvestigation } from "@/lib/api";
-import type { SSEEvent, OrchestratorResponse } from "@/lib/types";
+import type { SSEEvent } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import { Bot, Send, Loader2, User, RefreshCw } from "lucide-react";
-
-interface Message {
-  role:    "user" | "assistant" | "system";
-  content: string;
-  result?: OrchestratorResponse;
-}
+import { useAssistantStore } from "@/lib/stores/assistant-store";
+import { logReset } from "@/lib/stores/reset-all";
+import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
 
 export default function AssistantPage() {
-  const [messages, setMessages]   = useState<Message[]>([
-    {
-      role: "system",
-      content:
-        "👋 **Welcome to the AMR AI Assistant.**\n\nDescribe an incident or ask me to investigate something. I'll use real-time FAISS similarity search + LLM analysis to diagnose issues, rank causes, and suggest solutions.",
-    },
-  ]);
-  const [input,   setInput]   = useState("");
+  const { messages, addMessage, updateMessage, input, setInput, resetAssistant } = useAssistantStore();
   const [busy,    setBusy]    = useState(false);
   const [steps,   setSteps]   = useState<string[]>([]);
   const bottomRef             = useRef<HTMLDivElement>(null);
+  const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("assistant");
   const unsubRef              = useRef<(() => void) | null>(null);
 
   function scrollDown() {
@@ -37,15 +29,9 @@ export default function AssistantPage() {
   }
 
   function reset() {
+    logReset("assistant");
     cancel();
-    setMessages([
-      {
-        role: "system",
-        content:
-          "👋 **Welcome to the AMR AI Assistant.**\n\nDescribe an incident or ask me to investigate something.",
-      },
-    ]);
-    setInput("");
+    resetAssistant();
   }
 
   async function send() {
@@ -55,13 +41,13 @@ export default function AssistantPage() {
     setBusy(true);
     setSteps([]);
 
-    const userMsg: Message = { role: "user", content: text };
-    setMessages((p) => [...p, userMsg]);
+    const userMsg = { role: "user" as const, content: text };
+    addMessage(userMsg);
     scrollDown();
 
     // Push empty assistant bubble
     const placeholderIdx = messages.length + 1;
-    setMessages((p) => [...p, { role: "assistant", content: "" }]);
+    addMessage({ role: "assistant", content: "" });
 
     let accumulated = "";
 
@@ -81,9 +67,7 @@ export default function AssistantPage() {
 
         if (ev.message && ev.step !== "complete" && ev.step !== "error") {
           accumulated += `\n_${ev.message}_`;
-          setMessages((p) =>
-            p.map((m, i) => (i === placeholderIdx ? { ...m, content: accumulated } : m))
-          );
+          updateMessage(placeholderIdx, { content: accumulated });
           scrollDown();
         }
 
@@ -106,11 +90,7 @@ export default function AssistantPage() {
             r.raw_analysis.slice(0, 600) + (r.raw_analysis.length > 600 ? "…" : ""),
           ].join("\n");
 
-          setMessages((p) =>
-            p.map((m, i) =>
-              i === placeholderIdx ? { ...m, content: summary, result: r } : m
-            )
-          );
+          updateMessage(placeholderIdx, { content: summary, result: r });
           setBusy(false);
           setSteps([]);
           scrollDown();
@@ -118,13 +98,7 @@ export default function AssistantPage() {
         }
 
         if (ev.step === "error") {
-          setMessages((p) =>
-            p.map((m, i) =>
-              i === placeholderIdx
-                ? { ...m, content: `❌ Error: ${ev.error ?? "Unknown server error."}` }
-                : m
-            )
-          );
+          updateMessage(placeholderIdx, { content: `❌ Error: ${ev.error ?? "Unknown server error."}` });
           setBusy(false);
           setSteps([]);
           unsub();
@@ -157,9 +131,19 @@ export default function AssistantPage() {
             <p className="text-xs text-slate-500">Streaming incident analysis</p>
           </div>
         </div>
-        <button onClick={reset} className="btn btn-ghost gap-1.5 text-xs">
-          <RefreshCw size={13} /> New chat
-        </button>
+        <div className="flex items-center gap-3">
+          <ModelSelector
+            providers={providers}
+            value={effective}
+            onChange={hasOverride ? overridePage : switchGlobalModel}
+            isOverride={hasOverride}
+            onClearOverride={clearOverride}
+            label="Model"
+          />
+          <button onClick={reset} className="btn btn-ghost gap-1.5 text-xs">
+            <RefreshCw size={13} /> New chat
+          </button>
+        </div>
       </div>
 
       {/* Messages */}

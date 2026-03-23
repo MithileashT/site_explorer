@@ -14,8 +14,8 @@ import {
   AlertTriangle,
   CheckCircle,
   Loader2,
-} from "lucide-react";
-
+} from "lucide-react";import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
 function Stat({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (
     <div className="card flex flex-col gap-1">
@@ -78,7 +78,7 @@ function SiteCard({ site }: { site: SiteInfo }) {
 
 const QUICK_LINKS = [
   { href: "/bags",        icon: PackageSearch, label: "Analyze a Bag",    desc: "Upload & extract ROS logs"  },
-  { href: "/investigate", icon: SearchCode,    label: "Investigate",      desc: "AI-powered incident analysis"},
+  { href: "/investigate", icon: SearchCode,    label: "Log Analyzer",      desc: "AI-powered incident analysis"},
   { href: "/assistant",   icon: Bot,           label: "AI Assistant",     desc: "Chat with streaming AI"     },
 ];
 
@@ -86,6 +86,7 @@ export default function DashboardPage() {
   const [health, setHealth]   = useState<HealthResponse | null>(null);
   const [sites,  setSites]    = useState<SiteInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const { providers, globalModel, switchGlobalModel } = useAIModel();
 
   useEffect(() => {
     Promise.allSettled([fetchHealth(), listSites()]).then(([h, s]) => {
@@ -103,13 +104,22 @@ export default function DashboardPage() {
           <h1 className="text-2xl font-bold text-slate-100">Platform Dashboard</h1>
           <p className="text-sm text-slate-400 mt-0.5">AMR fleet operations &amp; AI-powered incident intelligence</p>
         </div>
-        {health && (
-          <span className={`badge ${health.status === "ok" ? "badge-green" : "badge-yellow"} text-sm px-3 py-1`}>
-            {health.status === "ok"
-              ? <><CheckCircle size={12} /> System Online</>
-              : <><AlertTriangle size={12} /> Degraded</>}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {health && (
+            <span className={`badge ${health.status === "ok" ? "badge-green" : "badge-yellow"} text-sm px-3 py-1`}>
+              {health.status === "ok"
+                ? <><CheckCircle size={12} /> System Online</>
+                : <><AlertTriangle size={12} /> Degraded</>}
+            </span>
+          )}
+          <ModelSelector
+            providers={providers}
+            value={globalModel}
+            onChange={switchGlobalModel}
+            label="Global AI"
+            size="md"
+          />
+        </div>
       </div>
 
       {/* Stats row */}
@@ -123,7 +133,7 @@ export default function DashboardPage() {
         ) : (
           <>
             <Stat label="Sites"          value={sites.length}                sub="active deployments" />
-            <Stat label="AI Model"        value={health?.model ?? "—"}        sub={health?.status === "ok" ? "connected" : "offline"} />
+            <Stat label="AI Model"        value={providers.find((p) => p.id === globalModel)?.name ?? health?.model ?? "—"}        sub={health?.status === "ok" ? "connected" : "offline"} />
             <Stat label="Known Incidents" value={health?.faiss_entries ?? 0}  sub="in vector DB" />
             <Stat label="Sites Loaded"    value={health?.sites_loaded ?? 0}   sub="map data available" />
           </>

@@ -23,10 +23,16 @@ def register_singletons(llm, matcher, site_mgr):
 def health():
     faiss_entries = _matcher.total if _matcher else 0
     site_count    = len(_site_manager.list_sites()) if _site_manager else 0
+
+    active_provider = None
+    if _llm_service and hasattr(_llm_service, "active_provider"):
+        active_provider = _llm_service.active_provider
+
     return {
         "status":       "ok",
         "version":      "1.0.0",
-        "model":        settings.ollama_model,
+        "model":        active_provider["model"] if active_provider else settings.ollama_model,
         "faiss_entries": faiss_entries,
         "sites_loaded": site_count,
+        "active_provider": active_provider,
     }

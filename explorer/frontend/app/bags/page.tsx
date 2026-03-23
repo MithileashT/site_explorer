@@ -1,9 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { analyzeBag, fetchTimeline } from "@/lib/api";
-import type { BagLogAnalysisResponse, BagTimeline } from "@/lib/types";
+import { useBagsStore } from "@/lib/stores/bags-store";
+import { logReset } from "@/lib/stores/reset-all";
 import BagUpload from "@/components/bags/BagUpload";
+import RIOFetchPanel from "@/components/bags/RIOFetchPanel";
+import RIOUploadPanel from "@/components/bags/RIOUploadPanel";
 import LogVolumeChart from "@/components/bags/LogVolumeChart";
 import BagLogDebugger from "@/components/bags/BagLogDebugger";
 import MapDiffPanel from "@/components/bags/MapDiffPanel";
@@ -16,25 +19,49 @@ import {
   ChevronRight,
   Info,
   Bot,
+  UploadCloud,
+  CloudDownload,
+  Radio,
+  RefreshCw,
 } from "lucide-react";
+import ModelSelector from "@/components/layout/ModelSelector";
+import { useAIModel } from "@/hooks/useAIModel";
 
 type Tab = "logs" | "mapdiff";
+type BagSource = "upload" | "rio" | "device";
 
 export default function BagsPage() {
-  const [bagPath, setBagPath] = useState<string | null>(null);
-  const [timeline, setTimeline] = useState<BagTimeline | null>(null);
-  const [analysis, setAnalysis] = useState<BagLogAnalysisResponse | null>(null);
+  // Persisted state from store
+  const { bagPath, setBagPath, timeline, setTimeline, analysis, setAnalysis, tab, setTab, bagSource, setBagSource, resetBags } = useBagsStore();
+  // Transient local state — NOT persisted
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<Tab>("logs");
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [showRawLLM, setShowRawLLM] = useState(false);
+  // True only after the user explicitly loads a bag in the current session.
+  // Prevents the timeline from auto-rendering on page load from persisted bagPath.
+  const [sessionActive, setSessionActive] = useState(false);
+  const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("bags");
+
+  // Re-fetch timeline when bagPath is set but timeline was lost mid-session
+  // (e.g., after SPA navigation). Only runs when the user has already triggered
+  // a bag load in the current session (sessionActive), so it never auto-fetches
+  // on a cold page load from persisted bagPath.
+  useEffect(() => {
+    let cancelled = false;
+    if (sessionActive && bagPath && !timeline) {
+      fetchTimeline(bagPath)
+        .then((t) => { if (!cancelled) setTimeline(t); })
+        .catch(() => {});
+    }
+    return () => { cancelled = true; };
+  }, [sessionActive, bagPath, timeline, setTimeline]);
 
   async function onUploaded(path: string) {
+    resetBags();
     setBagPath(path);
-    setAnalysis(null);
-    setTimeline(null);
     setError("");
+    setSessionActive(true);
     try {
       const tl = await fetchTimeline(path);
       setTimeline(tl);
@@ -48,7 +75,7 @@ export default function BagsPage() {
     setAnalyzing(true);
     setError("");
     try {
-      const res = await analyzeBag(bagPath, windowStart, windowEnd);
+      const res = await analyzeBag(bagPath, windowStart, windowEnd, effective ?? undefined);
       setAnalysis(res);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Analysis failed");
@@ -72,18 +99,60 @@ export default function BagsPage() {
             Upload a ROS bag, explore logs with timeline, run AI analysis
           </p>
         </div>
+        <button
+          onClick={() => {
+            logReset("bags");
+            resetBags();
+            setError("");
+            setAnalyzing(false);
+          }}
+          title="Reset page"
+          className="ml-auto flex items-center gap-1.5 rounded-lg bg-white/[0.05] border border-white/[0.08] px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-white/[0.08] transition-all"
+        >
+          <RefreshCw size={12} />
+          Reset
+        </button>
+        <ModelSelector
+          providers={providers}
+          value={effective}
+          onChange={hasOverride ? overridePage : switchGlobalModel}
+          isOverride={hasOverride}
+          onClearOverride={clearOverride}
+          label="Model"
+        />
       </div>
 
-      {/* ── Upload ────────────────────────────────────────── */}
+      {/* ── Bag Source (Upload / RIO) ─────────────────────── */}
       <section className="card">
-        <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-          Upload Bag File
-        </h2>
-        <BagUpload onUploaded={onUploaded} />
+        <div className="flex gap-2 mb-3">
+          {(
+            [
+              { id: "upload", label: "Upload File", icon: UploadCloud },
+              { id: "rio", label: "Fetch from RIO", icon: CloudDownload },
+              { id: "device", label: "Device Upload", icon: Radio },
+            ] as { id: BagSource; label: string; icon: React.ElementType }[]
+          ).map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setBagSource(id)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                bagSource === id
+                  ? "bg-blue-600/20 text-blue-400 border border-blue-600/30"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent"
+              }`}
+            >
+              <Icon size={13} />
+              {label}
+            </button>
+          ))}
+        </div>
+        {bagSource === "upload" && <BagUpload onUploaded={onUploaded} />}
+        {bagSource === "rio" && <RIOFetchPanel onFetched={onUploaded} />}
+        {bagSource === "device" && <RIOUploadPanel onUploaded={() => setError("")} />}
       </section>
 
       {/* ── Collapsible Timeline ──────────────────────────── */}
-      {timeline && (
+      {timeline && sessionActive && (
         <section className="card p-0 overflow-hidden">
           <button
             onClick={() => setTimelineOpen((p) => !p)}
@@ -207,14 +276,30 @@ export default function BagsPage() {
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Bot size={13} className="text-blue-400" /> AI Analysis
               </h3>
-              {analysis.llm_summary && (
-                <button
-                  onClick={() => setShowRawLLM((p) => !p)}
-                  className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-                >
-                  {showRawLLM ? "Formatted" : "Raw"}
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {(analysis.actual_total_tokens ?? 0) > 0 && (() => {
+                  const pin  = analysis.actual_prompt_tokens     ?? 0;
+                  const pout = analysis.actual_completion_tokens ?? 0;
+                  const cost = analysis.cost_usd ?? (pin * 2.00 + pout * 8.00) / 1_000_000;
+                  return (
+                    <span
+                      className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400"
+                      title={`Actual tokens · in=${pin.toLocaleString()} out=${pout.toLocaleString()} · gpt-4.1: $2/M in, $8/M out`}
+                    >
+                      {pin.toLocaleString()} in | {pout.toLocaleString()} out
+                      {" · "}<span className="text-emerald-400">${cost.toFixed(4)}</span>
+                    </span>
+                  );
+                })()}
+                {analysis.llm_summary && (
+                  <button
+                    onClick={() => setShowRawLLM((p) => !p)}
+                    className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    {showRawLLM ? "Formatted" : "Raw"}
+                  </button>
+                )}
+              </div>
             </div>
             {analysis.llm_summary ? (
               showRawLLM ? (
