@@ -62,6 +62,8 @@ type UploadPhase =
   | "done"
   | "error";
 
+const MAX_BAG_FILE_BYTES = 600 * 1024 * 1024;
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function BagUploadPanel({
@@ -143,6 +145,11 @@ export default function BagUploadPanel({
       setMessage("Only .bag and .db3 files are supported.");
       return;
     }
+    if (file.size > MAX_BAG_FILE_BYTES) {
+      setPhase("error");
+      setMessage("File exceeds 600 MB limit.");
+      return;
+    }
     setBagFile(file);
     setPhase("idle");
     setMessage("");
@@ -158,6 +165,11 @@ export default function BagUploadPanel({
     if (ext !== "bag" && ext !== "db3") {
       setPhase("error");
       setMessage("Only .bag and .db3 files are supported.");
+      return;
+    }
+    if (file.size > MAX_BAG_FILE_BYTES) {
+      setPhase("error");
+      setMessage("File exceeds 600 MB limit.");
       return;
     }
     setBagFile(file);
@@ -412,6 +424,7 @@ export default function BagUploadPanel({
                 ) : (
                   <p className="text-[13px] text-[#c9d1d9]">
                     Click or drop a <code className="text-[#00e5ff] font-semibold">.bag</code> / <code className="text-[#00e5ff] font-semibold">.db3</code> file
+                    <span className="text-[#8b949e]"> (max 600 MB)</span>
                   </p>
                 )}
               </div>

@@ -60,3 +60,13 @@ data/bags/
 data/sites/
 site_explorer/backend/data/bags/
 site_explorer/backend/data/sites/
+
+# Local ops/cheatsheet files — not for version control
+RELOAD.md
+
+# Backup files
+*.bak
+*.orig
+
+# Copilot skills accidentally placed in source tree
+explorer/backend/ado-issue-analyzer/

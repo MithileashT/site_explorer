@@ -12,6 +12,10 @@ from typing import Any, Dict
 # Key = model name (or prefix match).
 # Values = {"input": $/M tokens, "output": $/M tokens}
 MODEL_PRICING: Dict[str, Dict[str, float]] = {
+    # GPT-5.x family
+    "gpt-5.4":       {"input": 3.00,  "output": 12.00},
+    "gpt-5.2":       {"input": 2.50,  "output": 10.00},
+    "gpt-5.1":       {"input": 2.00,  "output": 8.00},
     # GPT-4.1 family
     "gpt-4.1":       {"input": 2.00,  "output": 8.00},
     "gpt-4.1-mini":  {"input": 0.40,  "output": 1.60},

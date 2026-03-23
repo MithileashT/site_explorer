@@ -47,7 +47,7 @@ _llm_service  = None
 _site_manager = None
 
 ALLOWED_EXTENSIONS = {".bag", ".db3"}
-MAX_UPLOAD_BYTES    = 400 * 1024 * 1024  # 400 MB
+MAX_UPLOAD_BYTES    = 600 * 1024 * 1024  # 600 MB
 MAX_LOG_ENTRIES     = 2_000              # max log lines returned to the UI
 
 
@@ -94,7 +94,7 @@ def _save_upload(file: UploadFile) -> tuple[str, int]:
 
     content = file.file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "File exceeds 400 MB limit.")
+        raise HTTPException(413, "File exceeds 600 MB limit.")
     with open(dest, "wb") as fh:
         fh.write(content)
 

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   frontend:
     command: ["sh", "-c", "npm ci --prefer-offline && npm run dev -- --hostname 0.0.0.0 --port 3000"]

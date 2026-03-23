@@ -17,6 +17,7 @@ from openai import OpenAI
 
 from core.config import settings
 from core.logging import get_logger
+from services.ai.pricing import MODEL_PRICING
 from services.ai.pricing import calculate_cost, get_pricing
 
 logger = get_logger(__name__)
@@ -173,12 +174,25 @@ class LLMService:
             })
 
         # OpenAI (when API key is configured)
+        # List the configured default plus well-known models from the pricing registry.
         if settings.openai_api_key:
+            _openai_models_seen: set = set()
+            # Always include the configured model first
             providers.append({
                 "id": f"openai:{settings.openai_model}",
                 "name": f"OpenAI {settings.openai_model}",
                 "type": "openai",
             })
+            _openai_models_seen.add(settings.openai_model)
+            # Add well-known OpenAI models from pricing registry
+            for model_name in MODEL_PRICING:
+                if model_name.startswith("gpt-") and model_name not in _openai_models_seen:
+                    providers.append({
+                        "id": f"openai:{model_name}",
+                        "name": f"OpenAI {model_name}",
+                        "type": "openai",
+                    })
+                    _openai_models_seen.add(model_name)
 
         # Gemini (when API key is configured)
         if settings.gemini_api_key:
@@ -352,6 +366,70 @@ class LLMService:
             raise RuntimeError(f"LLM call failed ({ptype}/{model}): {exc}") from exc
 
     # ── Session usage tracking ─────────────────────────────────────────────
+
+    def _resolve_client(self, model_override: Optional[str] = None):
+        """Resolve provider type, model name, and client for a given override.
+
+        Returns (ptype, model, client).
+        """
+        ptype = self._active_type
+        model = self._active_model
+        client = self.client
+
+        if model_override:
+            if ":" in model_override and model_override.split(":", 1)[0] in ("openai", "ollama", "gemini"):
+                ptype, model = model_override.split(":", 1)
+            else:
+                model = model_override
+                ptype = "ollama"
+
+            if ptype == "openai":
+                client = self._openai_client
+            elif ptype == "gemini":
+                client = self._gemini_client
+            else:
+                client = self._ollama_client
+
+        if client is None:
+            raise RuntimeError(f"No client available for provider '{ptype}'. Check configuration.")
+        return ptype, model, client
+
+    def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: int = 3500,
+        temperature: float = 0.1,
+        model_override: Optional[str] = None,
+        module: str = "other",
+    ):
+        """Streaming chat completion — yields text chunks as they arrive.
+
+        Same provider-routing logic as ``chat()`` but uses ``stream=True``.
+        Token usage is NOT tracked for streaming calls (API doesn't return usage
+        in streaming mode for most providers).
+        """
+        ptype, model, client = self._resolve_client(model_override)
+
+        llm_timeout = 600 if ptype == "ollama" else 180
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": messages,
+            "timeout": llm_timeout,
+            "stream": True,
+        }
+        if ptype == "ollama":
+            kwargs["extra_body"] = {"options": {"num_ctx": settings.ollama_num_ctx}}
+
+        try:
+            stream = client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as exc:
+            logger.error("LLM chat_stream failed (provider=%s, model=%s): %s", ptype, model, exc)
+            raise RuntimeError(f"LLM streaming failed ({ptype}/{model}): {exc}") from exc
 
     def _accumulate_session(self, module: str, usage: Dict[str, Any]) -> None:
         """Add a single call's usage to the cumulative session tracker."""

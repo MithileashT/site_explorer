@@ -3,7 +3,8 @@
 # Site Explorer — Startup Script
 # ──────────────────────────────────────────────────────────────────────────────
 # Usage:
-#   ./startup.sh          → Start all containers
+#   ./startup.sh          → Start all containers (production)
+#   ./startup.sh dev      → Start in dev mode (frontend hot-reload)
 #   ./startup.sh rebuild  → Rebuild & restart backend + frontend
 #   ./startup.sh logs     → Tail logs from all containers
 #   ./startup.sh status   → Show container status
@@ -19,6 +20,18 @@ case "${1:-start}" in
     echo "✔ Frontend: http://localhost:3000"
     echo "✔ Backend:  http://localhost:8000/docs"
     echo "✔ Ollama:   http://localhost:11435"
+    ;;
+
+  dev)
+    echo "▸ Starting in dev mode (frontend hot-reload)..."
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+    echo ""
+    echo "✔ Frontend (direct):  http://localhost:3000  ← use this for dev"
+    echo "✔ Via nginx:          http://localhost"
+    echo "✔ Backend API docs:   http://localhost:8000/docs"
+    echo ""
+    echo "  Edit any file in frontend/ → browser updates automatically"
+    echo "  View frontend logs: docker logs amr_frontend -f"
     ;;
 
   rebuild)
@@ -44,7 +57,7 @@ case "${1:-start}" in
     ;;
 
   *)
-    echo "Usage: $0 {start|rebuild|logs|status|stop}"
+    echo "Usage: $0 {start|dev|rebuild|logs|status|stop}"
     exit 1
     ;;
 esac

@@ -99,6 +99,27 @@ def test_llm_service_includes_openai_when_key_configured(monkeypatch):
         assert "openai" in types
 
 
+def test_llm_service_includes_gpt4o_when_key_configured(monkeypatch):
+    """When OPENAI_API_KEY is set, gpt-4o and gpt-4o-mini should appear in available_providers."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test-key-12345")
+    monkeypatch.setattr(settings, "openai_model", "gpt-4.1")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService
+
+    with patch("services.ai.llm_service.OpenAI"):
+        svc = LLMService()
+        providers = svc.available_providers()
+        ids = [p["id"] for p in providers]
+        assert "openai:gpt-4o" in ids
+        assert "openai:gpt-4o-mini" in ids
+        assert "openai:gpt-4.1" in ids
+        # No duplicates
+        assert ids.count("openai:gpt-4.1") == 1
+
+
 def test_llm_service_set_active_provider():
     """set_active_provider() should switch the active provider and model."""
     from services.ai.llm_service import LLMService
@@ -110,6 +131,24 @@ def test_llm_service_set_active_provider():
             # Switch to first available
             svc.set_active_provider(providers[0]["id"])
             assert svc.active_provider["id"] == providers[0]["id"]
+
+
+def test_llm_service_switch_to_gpt4o(monkeypatch):
+    """set_active_provider('openai:gpt-4o') should switch model to gpt-4o."""
+    from core.config import settings
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test-key-12345")
+    monkeypatch.setattr(settings, "openai_model", "gpt-4.1")
+    import services.ai.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod, "settings", settings)
+
+    from services.ai.llm_service import LLMService
+
+    with patch("services.ai.llm_service.OpenAI"):
+        svc = LLMService()
+        result = svc.set_active_provider("openai:gpt-4o")
+        assert result["model"] == "gpt-4o"
+        assert result["type"] == "openai"
+        assert svc.active_provider["id"] == "openai:gpt-4o"
 
 
 def test_llm_service_set_invalid_provider_raises():

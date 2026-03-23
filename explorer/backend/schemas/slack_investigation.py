@@ -51,6 +51,8 @@ class SlackThreadInvestigationResponse(BaseModel):
     channel_id: str
     thread_ts: str
     message_count: int
+    file_mention_count: int = 0
+    # Deprecated alias kept for backward compatibility with existing clients.
     attachment_count: int = 0
     model_used: str = ""
     participants: List[str] = []
@@ -58,9 +60,12 @@ class SlackThreadInvestigationResponse(BaseModel):
     key_findings: List[str] = []
     recommended_actions: List[str] = []
     risk_level: str = "medium"
+    assessment: str = ""
     timeline: List[SlackThreadMessage] = []
     attachments: List[SlackThreadAttachment] = []
     raw_analysis: str = ""
+    solution: str = ""
+    cause: str = ""
     # Actual tokens reported back by the LLM API (0 when using Ollama)
     actual_prompt_tokens:     int = 0
     actual_completion_tokens: int = 0

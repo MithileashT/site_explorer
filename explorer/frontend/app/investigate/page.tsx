@@ -1191,7 +1191,7 @@ export default function LogViewerPage() {
                   <span
                     className="rounded border px-2 py-0.5"
                     style={{ borderColor: over ? "#7f1d1d" : BORDER, color: over ? "#fca5a5" : undefined }}
-                    title={`Actual tokens used · in=${pin.toLocaleString()} out=${pout.toLocaleString()} total=${ptot.toLocaleString()} · gpt-4.1: $2/M in, $8/M out`}
+                    title={`Actual tokens used · in=${pin.toLocaleString()} out=${pout.toLocaleString()} total=${ptot.toLocaleString()}${analysisResult.model_used ? ` · model: ${analysisResult.model_used}` : ""}`}
                   >
                     Tokens: <span className="text-slate-300">{pin.toLocaleString()} in | {pout.toLocaleString()} out</span>
                     {" · "}Cost: <span className="text-emerald-400">${cost.toFixed(4)}</span>
@@ -1204,7 +1204,7 @@ export default function LogViewerPage() {
                     borderColor: analysisResult.estimated_tokens > 28000 ? "#7f1d1d" : BORDER,
                     color: analysisResult.estimated_tokens > 28000 ? "#fca5a5" : undefined,
                   }}
-                  title="Estimated prompt tokens sent to the LLM (prompt + max output). Limit: 30 000 TPM for gpt-4.1."
+                  title={`Estimated prompt tokens sent to the LLM (prompt + max output).${analysisResult.model_used ? ` Model: ${analysisResult.model_used}` : ""}`}
                 >
                   Tokens: <span className="text-slate-300">~{analysisResult.estimated_tokens.toLocaleString()}</span>
                   {" / 30 000 TPM"}
