@@ -69,7 +69,7 @@ export default function BagUpload({ onUploaded }: Props) {
           <p className="text-sm font-medium text-slate-300">
             {drag ? "Drop to upload" : "Drag & drop your ROS bag here"}
           </p>
-          <p className="text-xs text-slate-500 mt-1">or click to browse · .bag .db3 · max 400 MB</p>
+          <p className="text-xs text-slate-500 mt-1">or click to browse · .bag .db3 · max 600 MB</p>
         </div>
         <input
           ref={inputRef}

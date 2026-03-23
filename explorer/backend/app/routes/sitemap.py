@@ -31,7 +31,7 @@ _git_mgr: Optional[GitRepoManager] = None
 
 # ── Bag upload constants ───────────────────────────────────────────────────────
 ALLOWED_BAG_EXTENSIONS = {".bag", ".db3"}
-MAX_BAG_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+MAX_BAG_UPLOAD_BYTES = 600 * 1024 * 1024  # 600 MB
 
 
 def _get_git() -> GitRepoManager:
@@ -293,7 +293,7 @@ def _save_sitemap_bag(file: UploadFile) -> tuple[str, int]:
 
     content = file.file.read()
     if len(content) > MAX_BAG_UPLOAD_BYTES:
-        raise HTTPException(413, "File exceeds 500 MB limit.")
+        raise HTTPException(413, "File exceeds 600 MB limit.")
     with open(dest, "wb") as fh:
         fh.write(content)
 

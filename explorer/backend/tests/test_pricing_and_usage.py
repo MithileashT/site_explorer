@@ -26,6 +26,10 @@ class TestGetPricing:
         p = get_pricing("gpt-4o-mini")
         assert p == {"input": 0.15, "output": 0.60}
 
+    def test_gpt4o(self):
+        p = get_pricing("gpt-4o")
+        assert p == {"input": 2.50, "output": 10.00}
+
     def test_o4_mini(self):
         p = get_pricing("o4-mini")
         assert p == {"input": 1.10, "output": 4.40}

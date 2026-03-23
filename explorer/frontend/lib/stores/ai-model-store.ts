@@ -58,7 +58,7 @@ export const useAIModelStore = create<AIModelState>()(
       {
         name: "amr-ai-model-state",
         version: 1,
-        storage: createJSONStorage(() => sessionStorage),
+        storage: createJSONStorage(() => localStorage),
         // providers are NOT persisted — always re-fetched fresh on mount
         partialize: (state) => ({
           globalModel: state.globalModel,

@@ -5,7 +5,6 @@ import { useForm } from "react-hook-form";
 import { Manrope, Space_Grotesk } from "next/font/google";
 import {
   AlertTriangle,
-  CheckCircle2,
   ChevronDown,
   Copy,
   CopyCheck,
@@ -22,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 
-import { investigateSlackThread, listSiteMapSites, getSiteBranchInfo } from "@/lib/api";
+import { investigateSlackThreadStream, listSiteMapSites, getSiteBranchInfo } from "@/lib/api";
 import ModelSelector from "@/components/layout/ModelSelector";
 import { useAIModel } from "@/hooks/useAIModel";
 import { logReset } from "@/lib/stores/reset-all";
@@ -107,6 +106,8 @@ export default function SlackInvestigationPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [showRaw, setShowRaw] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
+  const streamAbortRef = useRef<AbortController | null>(null);
   const [sitesLoading, setSitesLoading] = useState(true);
   const [sitesError, setSitesError] = useState("");
   const { providers, effective, hasOverride, overridePage, clearOverride, switchGlobalModel } = useAIModel("slack-investigation");
@@ -178,27 +179,46 @@ export default function SlackInvestigationPage() {
     setRunning(true);
     setError("");
     setResult(null);
-    try {
-      const payload: SlackThreadInvestigationRequest = {
-        ...data,
-        site_id: data.site_id?.trim() || undefined,
-        max_messages: data.max_messages || 200,
-        model_override: effective ?? undefined,
-      };
-      const response = await investigateSlackThread(payload);
-      setResult(response);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to investigate Slack thread.");
-    } finally {
-      setRunning(false);
-    }
+    setStreamingText("");
+    const payload: SlackThreadInvestigationRequest = {
+      ...data,
+      site_id: data.site_id?.trim() || undefined,
+      max_messages: data.max_messages || 200,
+      model_override: effective ?? undefined,
+    };
+
+    // Single streaming call: streams LLM text live, then emits structured result
+    let gotResult = false;
+    streamAbortRef.current = investigateSlackThreadStream(
+      payload,
+      (chunk) => setStreamingText((prev) => prev + chunk),
+      () => {
+        // Stream done — only update running state if result wasn't already received
+        if (!gotResult) setRunning(false);
+      },
+      (err) => {
+        setStreamingText("");
+        setError(err);
+        setRunning(false);
+      },
+      (response) => {
+        // Structured result received — switch from streaming preview to full result
+        gotResult = true;
+        setStreamingText("");
+        setResult(response);
+        setRunning(false);
+      },
+    );
   }
 
   function resetAll() {
     logReset("slack-investigation");
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
     reset();
     resetSlackInvestigation();
     setError("");
+    setStreamingText("");
     setShowRaw(false);
     setSiteBranchInfo(null);
   }
@@ -513,6 +533,12 @@ export default function SlackInvestigationPage() {
                   <Loader2 size={14} className="animate-spin" />
                   Fetching Slack thread and generating summary...
                 </div>
+                {streamingText && (
+                  <div className="mt-3 max-h-[320px] overflow-y-auto rounded-lg border border-sky-500/10 bg-slate-900/60 p-3 text-xs text-slate-400 whitespace-pre-wrap font-mono">
+                    {streamingText}
+                    <span className="inline-block w-1.5 h-3 bg-sky-400/70 animate-pulse ml-0.5 align-text-bottom" />
+                  </div>
+                )}
               </section>
             )}
 
@@ -523,6 +549,17 @@ export default function SlackInvestigationPage() {
                     <span className={`rounded-full border px-2.5 py-1 text-xs uppercase tracking-[0.14em] ${riskPill(result.risk_level)}`}>
                       Risk: {result.risk_level}
                     </span>
+                    {result.assessment && (
+                      <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
+                        result.risk_level === "high"
+                          ? "border-red-500/20 bg-red-500/10 text-red-300"
+                          : result.risk_level === "medium"
+                            ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                            : "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                      }`}>
+                        {result.assessment}
+                      </span>
+                    )}
                     <span className="rounded-full border border-white/15 bg-white/[0.04] px-2.5 py-1 text-xs text-slate-200">
                       Channel: {result.channel_id}
                     </span>
@@ -541,7 +578,7 @@ export default function SlackInvestigationPage() {
                       return (
                         <span
                           className="rounded-full border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200"
-                          title={`Actual tokens used · in=${pin.toLocaleString()} out=${pout.toLocaleString()} · gpt-4.1: $2/M in, $8/M out`}
+                          title={`Actual tokens used · in=${pin.toLocaleString()} out=${pout.toLocaleString()}${result.model_used ? ` · model: ${result.model_used}` : ""}`}
                         >
                           {pin.toLocaleString()} in | {pout.toLocaleString()} out · ${cost.toFixed(4)}
                         </span>
@@ -551,23 +588,25 @@ export default function SlackInvestigationPage() {
                 </section>
 
                 <section className="rounded-2xl border border-slate-700/55 bg-slate-900/80 p-5">
-                  {/* Single copy for all three sub-sections */}
+                  {/* Single copy for all sections */}
                   <div className="mb-4 flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold text-slate-100 [font-family:var(--font-slack-heading)]">Analysis</h2>
                     <CopyButton
                       text={[
                         "## Thread Summary",
                         result.thread_summary,
+                        ...(result.cause ? ["", "## Cause", result.cause] : []),
                         "",
-                        "## Key Findings",
+                        "## Key Observations & Findings",
                         result.key_findings.length > 0
                           ? result.key_findings.map((f, i) => `${i + 1}. ${f}`).join("\n")
                           : "No findings generated.",
                         "",
-                        "## Recommended Actions",
+                        "## Recovery Action",
                         result.recommended_actions.length > 0
                           ? result.recommended_actions.map((a, i) => `${i + 1}. ${a}`).join("\n")
                           : "No actions generated.",
+                        ...(result.solution ? ["", "## Solution", result.solution] : []),
                       ].join("\n")}
                     />
                   </div>
@@ -612,31 +651,47 @@ export default function SlackInvestigationPage() {
 
                     <div className="border-t border-slate-700/50" />
 
-                    {/* Key Findings */}
+                    {/* Cause */}
+                    {result.cause && (
+                      <>
+                        <div>
+                          <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
+                            Cause
+                          </h3>
+                          <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-3 text-sm text-slate-300">
+                            {result.cause.split("\n").map((line, i) => (
+                              <p key={i} className={line.trim() ? "mb-1" : "mb-2"}>{line}</p>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="border-t border-slate-700/50" />
+                      </>
+                    )}
+
+                    {/* Key Observations & Findings */}
+                    {result.key_findings.length > 0 && (
+                      <>
+                        <div>
+                          <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
+                            Key Observations & Findings
+                          </h3>
+                          <ul className="space-y-2">
+                            {result.key_findings.map((item, idx) => (
+                              <li key={idx} className="flex items-start gap-2 text-sm text-slate-300">
+                                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400/60" />
+                                <span>{item}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div className="border-t border-slate-700/50" />
+                      </>
+                    )}
+
+                    {/* Recovery Action */}
                     <div>
                       <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
-                        Key Findings
-                      </h3>
-                      {result.key_findings.length === 0 ? (
-                        <p className="text-sm text-slate-500">No findings generated.</p>
-                      ) : (
-                        <ul className="space-y-2">
-                          {result.key_findings.map((item, idx) => (
-                            <li key={idx} className="flex items-start gap-2 text-sm text-slate-300">
-                              <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-300" />
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="border-t border-slate-700/50" />
-
-                    {/* Recommended Actions */}
-                    <div>
-                      <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
-                        Recommended Actions
+                        Recovery Action
                       </h3>
                       {result.recommended_actions.length === 0 ? (
                         <p className="text-sm text-slate-500">No actions generated.</p>
@@ -651,6 +706,22 @@ export default function SlackInvestigationPage() {
                         </ul>
                       )}
                     </div>
+
+                    {result.solution && (
+                      <>
+                        <div className="border-t border-slate-700/50" />
+                        <div>
+                          <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 [font-family:var(--font-slack-heading)]">
+                            Solution
+                          </h3>
+                          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm text-slate-300">
+                            {result.solution.split("\n").map((line, i) => (
+                              <p key={i} className={line.trim() ? "mb-1" : "mb-2"}>{line}</p>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </section>
 

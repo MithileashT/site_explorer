@@ -165,11 +165,16 @@ export interface SlackThreadInvestigationResponse {
   channel_id: string;
   thread_ts: string;
   message_count: number;
+  file_mention_count?: number;
+  attachment_count?: number;
   participants: string[];
   thread_summary: string;
   key_findings: string[];
   recommended_actions: string[];
   risk_level: "low" | "medium" | "high";
+  assessment?: string;
+  solution?: string;
+  cause?: string;
   model_used?: string;
   timeline: SlackThreadMessage[];
   raw_analysis: string;

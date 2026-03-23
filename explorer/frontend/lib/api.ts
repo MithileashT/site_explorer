@@ -373,6 +373,63 @@ export async function investigateSlackThread(
   return data;
 }
 
+/**
+ * Stream investigation summary via SSE.
+ * Yields text chunks as the LLM generates them, then a structured result.
+ * @param onChunk  called with each text fragment
+ * @param onDone   called when the stream finishes
+ * @param onError  called on stream error
+ * @param onResult called with the full structured response when available
+ * @returns an AbortController to cancel the stream
+ */
+export function investigateSlackThreadStream(
+  payload: SlackThreadInvestigationRequest,
+  onChunk: (text: string) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+  onResult?: (result: SlackThreadInvestigationResponse) => void,
+): AbortController {
+  const controller = new AbortController();
+  const url = `${BASE}/api/v1/slack/investigate/stream`;
+
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok || !res.body) {
+        onError(`Stream failed: ${res.status}`);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const evt = JSON.parse(line.slice(6));
+          if (evt.type === "chunk") onChunk(evt.text);
+          else if (evt.type === "result" && onResult) { onResult(evt.data as SlackThreadInvestigationResponse); }
+          else if (evt.type === "done") { onDone(); return; }
+          else if (evt.type === "error") { onError(evt.message); return; }
+        }
+      }
+      onDone();
+    })
+    .catch((err) => {
+      if (err.name !== "AbortError") onError(String(err));
+    });
+
+  return controller;
+}
+
 export async function getSlackLLMStatus(): Promise<SlackLLMStatusResponse> {
   const { data } = await http.get<SlackLLMStatusResponse>("/slack/status");
   return data;

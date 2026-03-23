@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ─── Volumes ────────────────────────────────────────────────────────────────
 volumes:
   ollama_data:
@@ -48,10 +46,15 @@ services:
       - GIT_CONFIG_VALUE_0=/app/sootballs_sites
     volumes:
       - ./backend/.env:/app/.env:ro
+      - ./backend/app:/app/app:ro
+      - ./backend/core:/app/core:ro
+      - ./backend/schemas:/app/schemas:ro
+      - ./backend/services:/app/services:ro
       - bag_data:/app/data/bags
       - faiss_data:/app/data
       - sites_data:/app/data/sites
       - /home/mithileash/catkin_ws/src/sootballs_sites:/app/sootballs_sites:ro
+      - ${HOME}/.config/rio-cli:/home/appuser/.config/rio-cli:ro
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     depends_on:
       ollama:
